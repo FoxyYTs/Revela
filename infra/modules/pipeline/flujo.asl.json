@@ -1,0 +1,113 @@
+{
+  "Comment": "Revela: analiza cada foto subida (etiquetas, texto, moderación y miniatura en paralelo) y la guarda",
+  "QueryLanguage": "JSONata",
+  "StartAt": "Leer evento",
+  "States": {
+    "Leer evento": {
+      "Type": "Pass",
+      "Comment": "EventBridge Pipes entrega el lote de SQS como arreglo; el body es la notificación de S3",
+      "Output": "{% ($m := $type($states.input) = 'array' ? $states.input[0] : $states.input; $s3 := $parse($m.body).Records[0].s3; {'bucket': $s3.bucket.name, 'key': $s3.object.key}) %}",
+      "Next": "Analizar"
+    },
+    "Analizar": {
+      "Type": "Parallel",
+      "Branches": [
+        {
+          "StartAt": "Etiquetas",
+          "States": {
+            "Etiquetas": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:rekognition:detectLabels",
+              "Arguments": {
+                "Image": { "S3Object": { "Bucket": "{% $states.input.bucket %}", "Name": "{% $states.input.key %}" } },
+                "MaxLabels": 20,
+                "MinConfidence": 75
+              },
+              "Output": "{% ($r := $states.result.Labels.{'Name': Name, 'Confidence': Confidence}; $exists($r) ? $r : []) %}",
+              "Retry": [${reintento_rekognition}],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Texto",
+          "States": {
+            "Texto": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:rekognition:detectText",
+              "Arguments": {
+                "Image": { "S3Object": { "Bucket": "{% $states.input.bucket %}", "Name": "{% $states.input.key %}" } }
+              },
+              "Output": "{% ($r := $states.result.TextDetections[Type = 'LINE' and Confidence >= 80].DetectedText; $exists($r) ? $r : []) %}",
+              "Retry": [${reintento_rekognition}],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Moderacion",
+          "States": {
+            "Moderacion": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::aws-sdk:rekognition:detectModerationLabels",
+              "Arguments": {
+                "Image": { "S3Object": { "Bucket": "{% $states.input.bucket %}", "Name": "{% $states.input.key %}" } },
+                "MinConfidence": 60
+              },
+              "Output": "{% ($r := $states.result.ModerationLabels.{'Name': Name, 'ParentName': ParentName, 'Confidence': Confidence}; $exists($r) ? $r : []) %}",
+              "Retry": [${reintento_rekognition}],
+              "End": true
+            }
+          }
+        },
+        {
+          "StartAt": "Miniatura y EXIF",
+          "States": {
+            "Miniatura y EXIF": {
+              "Type": "Task",
+              "Resource": "arn:aws:states:::lambda:invoke",
+              "Arguments": { "FunctionName": "${procesar}", "Payload": "{% $states.input %}" },
+              "Output": "{% $states.result.Payload %}",
+              "Retry": [${reintento_lambda}],
+              "End": true
+            }
+          }
+        }
+      ],
+      "Output": "{% {'bucket': $states.input.bucket, 'key': $states.input.key, 'etiquetas': $states.result[0], 'textos': $states.result[1], 'moderacion': $states.result[2], 'imagen': $states.result[3]} %}",
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Output": "{% $states.input %}", "Next": "Marcar error" }],
+      "Next": "Guardar"
+    },
+    "Guardar": {
+      "Type": "Task",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": { "FunctionName": "${guardar}", "Payload": "{% $states.input %}" },
+      "Output": "{% $states.result.Payload %}",
+      "Retry": [${reintento_lambda}],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Output": "{% $states.input %}", "Next": "Marcar error" }],
+      "End": true
+    },
+    "Marcar error": {
+      "Type": "Task",
+      "Comment": "Integración directa con DynamoDB: la galería muestra la foto con error en vez de dejarla procesando",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${tabla}",
+        "Key": {
+          "PK": { "S": "{% 'U#' & $split($states.input.key, '/')[1] %}" },
+          "SK": { "S": "{% 'F#' & $split($split($states.input.key, '/')[2], '.')[0] %}" }
+        },
+        "UpdateExpression": "SET estado = :e REMOVE expira",
+        "ConditionExpression": "attribute_exists(PK)",
+        "ExpressionAttributeValues": { ":e": { "S": "ERROR" } }
+      },
+      "Catch": [{ "ErrorEquals": ["DynamoDB.ConditionalCheckFailedException"], "Next": "Fallo" }],
+      "Next": "Fallo"
+    },
+    "Fallo": {
+      "Type": "Fail",
+      "Error": "AnalisisFallido",
+      "Cause": "No se pudo analizar la foto; revisa el paso que falló en el historial de la ejecución"
+    }
+  }
+}

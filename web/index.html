@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Revela</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="config.js"></script>
+<style>
+  :root {
+    --fondo: #121010; --panel: #1c1817; --borde: #2e2826; --texto: #efe8e4; --suave: #a3958f;
+    --acento: #e5533d; --acento-2: #f2a65a; --ok: #7bc47f; --radio: 14px;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--fondo); color: var(--texto); font: 15px/1.5 Inter, system-ui, sans-serif; }
+  button, input { font: inherit; color: inherit; }
+  button { cursor: pointer; }
+  .oculto { display: none !important; }
+
+  header { position: sticky; top: 0; z-index: 5; display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+           padding: 14px 20px; background: rgba(18,16,16,.92); backdrop-filter: blur(8px); border-bottom: 1px solid var(--borde); }
+  .logo { font: 600 26px Fraunces, serif; letter-spacing: .5px; margin-right: auto; }
+  .logo span { color: var(--acento); }
+  .buscar { flex: 1 1 260px; max-width: 460px; display: flex; background: var(--panel); border: 1px solid var(--borde); border-radius: 999px; }
+  .buscar input { flex: 1; background: none; border: 0; padding: 9px 16px; outline: none; min-width: 0; }
+  .buscar:focus-within { border-color: var(--acento-2); }
+  .btn { background: var(--panel); border: 1px solid var(--borde); border-radius: 999px; padding: 8px 16px; }
+  .btn:hover { border-color: var(--suave); }
+  .btn.primario { background: var(--acento); border-color: var(--acento); color: #fff; font-weight: 600; }
+  .btn.primario:hover { filter: brightness(1.1); }
+  .btn:disabled { opacity: .5; cursor: default; }
+
+  main { max-width: 1280px; margin: 0 auto; padding: 18px 20px 60px; }
+  .chips { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 16px; }
+  .chip { background: var(--panel); border: 1px solid var(--borde); border-radius: 999px; padding: 4px 12px; font-size: 13px; color: var(--suave); }
+  button.chip:hover, .chip.activo { color: var(--texto); border-color: var(--acento-2); }
+  .chip b { color: var(--texto); font-weight: 500; }
+
+  .estado-busqueda { color: var(--suave); margin: 0 0 12px; }
+  .grilla { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
+  .foto { position: relative; aspect-ratio: 1; border-radius: var(--radio); overflow: hidden; background: var(--panel);
+          border: 1px solid var(--borde); padding: 0; }
+  .foto img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform .3s; }
+  .foto:hover img { transform: scale(1.04); }
+  .foto .pie { position: absolute; inset: auto 0 0 0; padding: 22px 10px 8px; font-size: 12px; text-align: left;
+               background: linear-gradient(transparent, rgba(0,0,0,.75)); color: #fff; }
+  .foto .aviso { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 12px;
+                 color: var(--suave); font-size: 13px; }
+  .revelando { background: radial-gradient(circle at 50% 50%, rgba(229,83,61,.25), transparent 70%); animation: latido 1.6s ease-in-out infinite; }
+  @keyframes latido { 50% { opacity: .45; } }
+
+  .vacio { text-align: center; padding: 80px 20px; color: var(--suave); border: 2px dashed var(--borde); border-radius: var(--radio); }
+  .vacio h2 { font: 600 28px Fraunces, serif; color: var(--texto); margin: 0 0 8px; }
+  .soltar { outline: 3px dashed var(--acento-2); outline-offset: -12px; }
+  .mas { display: block; margin: 24px auto 0; }
+
+  .subidas { position: fixed; right: 16px; bottom: 16px; width: min(340px, calc(100vw - 32px)); z-index: 6;
+             background: var(--panel); border: 1px solid var(--borde); border-radius: var(--radio); padding: 12px 14px; font-size: 13px; }
+  .subidas div { display: flex; justify-content: space-between; gap: 8px; padding: 3px 0; }
+  .subidas span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  dialog { background: var(--panel); color: var(--texto); border: 1px solid var(--borde); border-radius: var(--radio);
+           padding: 0; max-width: min(1100px, 96vw); width: 100%; }
+  dialog::backdrop { background: rgba(0,0,0,.8); }
+  .detalle { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(260px, 1fr); }
+  .detalle img { width: 100%; max-height: 80vh; object-fit: contain; background: #000; display: block; }
+  .info { padding: 20px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; max-height: 80vh; }
+  .info h3 { margin: 0; font: 600 20px Fraunces, serif; word-break: break-word; }
+  .info dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 14px; }
+  .info dt { color: var(--suave); }
+  .info pre { white-space: pre-wrap; margin: 0; font: 13px/1.4 ui-monospace, monospace; background: var(--fondo); padding: 10px; border-radius: 8px; }
+  .info a { color: var(--acento-2); }
+  .acciones { display: flex; gap: 8px; margin-top: auto; }
+  .peligro { color: #ff8b7a; }
+  @media (max-width: 760px) { .detalle { grid-template-columns: 1fr; } .info { max-height: none; } }
+
+  .acceso { min-height: 100vh; display: grid; place-items: center; padding: 20px;
+            background: radial-gradient(ellipse at top, rgba(229,83,61,.18), transparent 60%); }
+  .tarjeta { width: min(380px, 100%); background: var(--panel); border: 1px solid var(--borde); border-radius: 20px; padding: 28px; }
+  .tarjeta .logo { font-size: 40px; text-align: center; margin: 0 0 4px; }
+  .tarjeta p.lema { text-align: center; color: var(--suave); margin: 0 0 22px; }
+  .tarjeta form { display: flex; flex-direction: column; gap: 10px; }
+  .tarjeta input { background: var(--fondo); border: 1px solid var(--borde); border-radius: 10px; padding: 11px 14px; }
+  .tarjeta input:focus { outline: none; border-color: var(--acento-2); }
+  .tarjeta .enlace { background: none; border: 0; color: var(--acento-2); padding: 6px; }
+  .mensaje { min-height: 1.5em; font-size: 14px; color: var(--acento-2); text-align: center; margin: 4px 0 0; }
+</style>
+</head>
+<body>
+
+<section id="acceso" class="acceso oculto">
+  <div class="tarjeta">
+    <h1 class="logo">Revel<span>a</span></h1>
+    <p class="lema">Tus fotos, entendidas solas.</p>
+    <form id="form-entrar">
+      <input name="correo" type="email" placeholder="Correo" autocomplete="email" required>
+      <input name="clave" type="password" placeholder="Contraseña" autocomplete="current-password" required>
+      <button class="btn primario">Entrar</button>
+      <button type="button" class="enlace" data-ir="registro">¿No tienes cuenta? Regístrate</button>
+    </form>
+    <form id="form-registro" class="oculto">
+      <input name="correo" type="email" placeholder="Correo" autocomplete="email" required>
+      <input name="clave" type="password" placeholder="Contraseña (8+, con letras y números)" autocomplete="new-password" minlength="8" required>
+      <button class="btn primario">Crear cuenta</button>
+      <button type="button" class="enlace" data-ir="entrar">Ya tengo cuenta</button>
+    </form>
+    <form id="form-confirmar" class="oculto">
+      <input name="codigo" inputmode="numeric" placeholder="Código que llegó a tu correo" autocomplete="one-time-code" required>
+      <button class="btn primario">Confirmar</button>
+      <button type="button" class="enlace" data-ir="entrar">Volver</button>
+    </form>
+    <p class="mensaje" id="mensaje" role="status"></p>
+  </div>
+</section>
+
+<div id="app" class="oculto">
+  <header>
+    <div class="logo">Revel<span>a</span></div>
+    <form class="buscar" id="form-buscar" role="search">
+      <input id="q" type="search" placeholder="Buscar: perro, playa, cumpleaños, texto de un letrero…" aria-label="Buscar fotos">
+    </form>
+    <button class="btn primario" id="btn-subir">Subir fotos</button>
+    <button class="btn" id="btn-salir">Salir</button>
+    <input id="archivos" type="file" accept="image/jpeg,image/png" multiple hidden>
+  </header>
+  <main id="zona">
+    <div class="chips" id="chips"></div>
+    <p class="estado-busqueda oculto" id="estado-busqueda"></p>
+    <div class="grilla" id="grilla"></div>
+    <div class="vacio oculto" id="vacio">
+      <h2>Aún no hay fotos</h2>
+      <p>Arrastra fotos aquí o usa <b>Subir fotos</b>. Revela las etiqueta, lee su texto y las ordena por fecha.</p>
+    </div>
+    <button class="btn mas oculto" id="btn-mas">Cargar más</button>
+  </main>
+  <div class="subidas oculto" id="subidas" aria-live="polite"></div>
+</div>
+
+<dialog id="dialogo">
+  <div class="detalle">
+    <img id="d-img" alt="">
+    <div class="info">
+      <h3 id="d-nombre"></h3>
+      <div class="chips" id="d-etiquetas"></div>
+      <dl id="d-datos"></dl>
+      <div id="d-texto"></div>
+      <div class="acciones">
+        <button class="btn peligro" id="d-borrar">Borrar</button>
+        <button class="btn" id="d-cerrar" autofocus>Cerrar</button>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<script>
+const C = window.CONFIG;
+const $ = (s) => document.querySelector(s);
+const MAX_BYTES = 15 * 1024 * 1024;
+
+// Crea elementos sin innerHTML: los nombres y textos vienen de los usuarios y del OCR
+function h(tag, props = {}, ...hijos) {
+  const el = Object.assign(document.createElement(tag), props);
+  el.append(...hijos.flat().filter((x) => x != null));
+  return el;
+}
+
+// ---------- Sesión con Cognito (API directa, sin SDK) ----------
+
+const sesion = { acceso: null, vence: 0, correo: null };
+
+async function cognito(accion, datos) {
+  const r = await fetch(`https://cognito-idp.${C.region}.amazonaws.com/`, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-amz-json-1.1", "X-Amz-Target": `AWSCognitoIdentityProviderService.${accion}` },
+    body: JSON.stringify({ ClientId: C.clientId, ...datos }),
+  });
+  const j = await r.json();
+  if (!r.ok) throw Object.assign(new Error(traducirError(j)), { tipo: (j.__type || "").split("#").pop() });
+  return j;
+}
+
+function traducirError(j) {
+  const tipo = (j.__type || "").split("#").pop();
+  return {
+    NotAuthorizedException: "Correo o contraseña incorrectos",
+    UserNotConfirmedException: "Confirma tu correo con el código que te enviamos",
+    UsernameExistsException: "Ya existe una cuenta con ese correo",
+    InvalidPasswordException: "La contraseña necesita 8 caracteres, letras minúsculas y números",
+    CodeMismatchException: "Código incorrecto",
+    ExpiredCodeException: "El código venció; regístrate de nuevo para recibir otro",
+    LimitExceededException: "Demasiados intentos, espera un momento",
+  }[tipo] || j.message || "Algo salió mal";
+}
+
+function guardarTokens(auth) {
+  sesion.acceso = auth.AccessToken;
+  sesion.vence = Date.now() + (auth.ExpiresIn - 60) * 1000;
+  try { if (auth.RefreshToken) localStorage.setItem("revela.refresh", auth.RefreshToken); } catch {}
+}
+
+async function token() {
+  if (sesion.acceso && Date.now() < sesion.vence) return sesion.acceso;
+  let refresh = null;
+  try { refresh = localStorage.getItem("revela.refresh"); } catch {}
+  if (!refresh) throw new Error("sin sesión");
+  const r = await cognito("InitiateAuth", { AuthFlow: "REFRESH_TOKEN_AUTH", AuthParameters: { REFRESH_TOKEN: refresh } });
+  guardarTokens(r.AuthenticationResult);
+  return sesion.acceso;
+}
+
+async function api(metodo, ruta, cuerpo) {
+  let r;
+  try {
+    r = await fetch(C.api + ruta, {
+      method: metodo,
+      headers: { Authorization: `Bearer ${await token()}`, ...(cuerpo ? { "Content-Type": "application/json" } : {}) },
+      body: cuerpo ? JSON.stringify(cuerpo) : undefined,
+    });
+  } catch (e) {
+    if (e.message === "sin sesión" || e.tipo === "NotAuthorizedException") return salir();
+    throw e;
+  }
+  if (r.status === 401) return salir();
+  const datos = r.status === 204 ? null : await r.json();
+  if (!r.ok) throw new Error(datos?.error || datos?.message || `Error ${r.status}`);
+  return datos;
+}
+
+function salir() {
+  try { localStorage.removeItem("revela.refresh"); } catch {}
+  sesion.acceso = null;
+  mostrarAcceso("entrar");
+  throw new Error("sesión cerrada");
+}
+
+function mostrarAcceso(form, msj = "") {
+  $("#app").classList.add("oculto");
+  $("#acceso").classList.remove("oculto");
+  for (const f of ["entrar", "registro", "confirmar"]) $(`#form-${f}`).classList.toggle("oculto", f !== form);
+  $("#mensaje").textContent = msj;
+}
+
+document.querySelectorAll("[data-ir]").forEach((b) => (b.onclick = () => mostrarAcceso(b.dataset.ir)));
+
+function enviando(form, fn) {
+  form.onsubmit = async (e) => {
+    e.preventDefault();
+    const boton = form.querySelector(".primario");
+    boton.disabled = true;
+    $("#mensaje").textContent = "";
+    try { await fn(Object.fromEntries(new FormData(form))); }
+    catch (err) { $("#mensaje").textContent = err.message; }
+    finally { boton.disabled = false; }
+  };
+}
+
+enviando($("#form-entrar"), async ({ correo, clave }) => {
+  sesion.correo = correo;
+  try {
+    const r = await cognito("InitiateAuth", { AuthFlow: "USER_PASSWORD_AUTH", AuthParameters: { USERNAME: correo, PASSWORD: clave } });
+    guardarTokens(r.AuthenticationResult);
+    $("#form-entrar").reset();
+    entrar();
+  } catch (e) {
+    if (e.tipo === "UserNotConfirmedException") {
+      await cognito("ResendConfirmationCode", { Username: correo });
+      return mostrarAcceso("confirmar", "Te enviamos un código nuevo al correo");
+    }
+    throw e;
+  }
+});
+
+enviando($("#form-registro"), async ({ correo, clave }) => {
+  await cognito("SignUp", { Username: correo, Password: clave, UserAttributes: [{ Name: "email", Value: correo }] });
+  sesion.correo = correo;
+  sesion.clave = clave; // solo en memoria, para entrar sin volver a escribirla tras confirmar
+  mostrarAcceso("confirmar", `Te enviamos un código a ${correo}`);
+});
+
+enviando($("#form-confirmar"), async ({ codigo }) => {
+  await cognito("ConfirmSignUp", { Username: sesion.correo, ConfirmationCode: codigo.trim() });
+  $("#form-confirmar").reset();
+  if (!sesion.clave) return mostrarAcceso("entrar", "Cuenta confirmada, ya puedes entrar");
+  const r = await cognito("InitiateAuth", { AuthFlow: "USER_PASSWORD_AUTH", AuthParameters: { USERNAME: sesion.correo, PASSWORD: sesion.clave } });
+  sesion.clave = null;
+  guardarTokens(r.AuthenticationResult);
+  entrar();
+});
+
+$("#btn-salir").onclick = async () => {
+  try {
+    const refresh = localStorage.getItem("revela.refresh");
+    if (refresh) await cognito("RevokeToken", { Token: refresh });
+  } catch {}
+  try { salir(); } catch {}
+};
+
+// ---------- Galería ----------
+
+const estado = { q: "", siguiente: null, fotos: [], sondeo: null };
+
+function entrar() {
+  $("#acceso").classList.add("oculto");
+  $("#app").classList.remove("oculto");
+  cargar();
+}
+
+async function cargar(mas = false) {
+  try {
+    const params = new URLSearchParams();
+    if (estado.q) params.set("q", estado.q);
+    if (mas && estado.siguiente) params.set("siguiente", estado.siguiente);
+    const r = await api("GET", `/fotos?${params}`);
+    estado.fotos = mas ? estado.fotos.concat(r.fotos) : r.fotos;
+    estado.siguiente = r.siguiente;
+    pintar();
+    if (!mas) cargarEtiquetas().catch(() => {});
+  } catch (e) { if (e.message !== "sesión cerrada") aviso(e.message); }
+}
+
+async function cargarEtiquetas() {
+  const { etiquetas } = await api("GET", "/etiquetas");
+  $("#chips").replaceChildren(...etiquetas.slice(0, 14).map((e) =>
+    h("button", { className: "chip" + (normal(e.etiqueta) === normal(estado.q) ? " activo" : ""), onclick: () => buscar(e.etiqueta) },
+      h("b", { textContent: e.etiqueta }), ` ${e.fotos}`)));
+}
+
+const normal = (t) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
+
+function buscar(q) {
+  $("#q").value = q;
+  estado.q = q.trim();
+  cargar();
+}
+
+$("#form-buscar").onsubmit = (e) => { e.preventDefault(); buscar($("#q").value); };
+$("#q").oninput = () => { if (!$("#q").value && estado.q) buscar(""); };
+
+function tarjeta(f) {
+  const contenido = {
+    LISTA: () => [h("img", { src: f.miniatura, alt: f.etiquetas.join(", ") || f.nombre || "Foto", loading: "lazy" }),
+                  h("span", { className: "pie", textContent: f.etiquetas.slice(0, 3).join(" · ") })],
+    PROCESANDO: () => [h("span", { className: "aviso revelando", textContent: "Revelando…" })],
+    CUARENTENA: () => [h("span", { className: "aviso", textContent: "🚫 Oculta por moderación" })],
+    ERROR: () => [h("span", { className: "aviso", textContent: "⚠️ No se pudo analizar" })],
+  }[f.estado]();
+  return h("button", { className: "foto", onclick: () => abrir(f.id), title: f.nombre || "" }, contenido);
+}
+
+function pintar() {
+  $("#grilla").replaceChildren(...estado.fotos.map(tarjeta));
+  $("#vacio").classList.toggle("oculto", estado.fotos.length > 0 || !!estado.q);
+  $("#btn-mas").classList.toggle("oculto", !estado.siguiente);
+  const eb = $("#estado-busqueda");
+  eb.classList.toggle("oculto", !estado.q);
+  eb.textContent = estado.q ? `${estado.fotos.length} foto(s) para “${estado.q}”` : "";
+
+  // Mientras alguna foto se esté revelando, refresca la galería cada 3 s
+  clearTimeout(estado.sondeo);
+  if (!estado.q && estado.fotos.some((f) => f.estado === "PROCESANDO")) estado.sondeo = setTimeout(() => cargar(), 3000);
+}
+
+$("#btn-mas").onclick = () => cargar(true);
+
+// ---------- Detalle ----------
+
+const fmtFecha = (iso) => iso ? new Date(iso).toLocaleString("es-CO", { dateStyle: "long", timeStyle: "short" }) : "—";
+
+async function abrir(id) {
+  let f;
+  try { f = await api("GET", `/fotos/${id}`); } catch (e) { return aviso(e.message); }
+  $("#d-img").src = f.original || "";
+  $("#d-img").alt = (f.etiquetas || []).join(", ");
+  $("#d-img").classList.toggle("oculto", !f.original);
+  $("#d-nombre").textContent = f.nombre || "Foto sin nombre";
+  $("#d-etiquetas").replaceChildren(...(f.etiquetas || []).map((e) =>
+    h("button", { className: "chip", textContent: e, onclick: () => { $("#dialogo").close(); buscar(e); } })));
+
+  const filas = [
+    ["Tomada", f.fecha_toma ? fmtFecha(f.fecha_toma) : "Sin fecha en la foto"],
+    ["Cámara", f.camara || "—"],
+    ["Tamaño", f.ancho ? `${f.ancho} × ${f.alto} px` : "—"],
+    ["Lugar", f.gps ? h("a", { href: `https://www.openstreetmap.org/?mlat=${f.gps.lat}&mlon=${f.gps.lon}#map=15/${f.gps.lat}/${f.gps.lon}`,
+                              target: "_blank", rel: "noopener", textContent: `${f.gps.lat}, ${f.gps.lon}` }) : "Sin GPS"],
+    ["Estado", { LISTA: "Lista", PROCESANDO: "Revelando…", CUARENTENA: `En cuarentena (${(f.moderacion || []).join(", ")})`, ERROR: "Error al analizar" }[f.estado]],
+  ];
+  $("#d-datos").replaceChildren(...filas.flatMap(([k, v]) => [h("dt", { textContent: k }), h("dd", { style: "margin:0" }, v)]));
+  $("#d-texto").replaceChildren(...(f.texto ? [h("dt", { textContent: "Texto en la foto", style: "color:var(--suave);margin-bottom:4px" }), h("pre", { textContent: f.texto })] : []));
+
+  $("#d-borrar").onclick = async () => {
+    if (!confirm("¿Borrar esta foto para siempre?")) return;
+    try {
+      await api("DELETE", `/fotos/${id}`);
+      $("#dialogo").close();
+      estado.fotos = estado.fotos.filter((x) => x.id !== id);
+      pintar();
+      cargarEtiquetas();
+    } catch (e) { aviso(e.message); }
+  };
+  $("#dialogo").showModal();
+}
+
+$("#d-cerrar").onclick = () => $("#dialogo").close();
+$("#dialogo").onclick = (e) => { if (e.target === $("#dialogo")) $("#dialogo").close(); };
+
+// ---------- Subidas: URL prefirmada → POST directo a S3 ----------
+
+$("#btn-subir").onclick = () => $("#archivos").click();
+$("#archivos").onchange = (e) => { subir([...e.target.files]); e.target.value = ""; };
+
+const zona = $("#zona");
+zona.ondragover = (e) => { e.preventDefault(); zona.classList.add("soltar"); };
+zona.ondragleave = () => zona.classList.remove("soltar");
+zona.ondrop = (e) => { e.preventDefault(); zona.classList.remove("soltar"); subir([...e.dataTransfer.files]); };
+
+function aviso(texto) {
+  const panel = $("#subidas");
+  panel.classList.remove("oculto");
+  panel.append(h("div", {}, h("span", { textContent: texto })));
+  setTimeout(() => { panel.lastChild?.remove(); if (!panel.children.length) panel.classList.add("oculto"); }, 5000);
+}
+
+async function subir(archivos) {
+  const panel = $("#subidas");
+  panel.classList.remove("oculto");
+  const filas = archivos.map((a) => {
+    const estadoFila = h("span", { textContent: "En cola" });
+    panel.append(h("div", {}, h("span", { textContent: a.name }), estadoFila));
+    return estadoFila;
+  });
+
+  // De a 3 a la vez: no satura la red del celular durante la demo
+  let i = 0;
+  const trabajador = async () => {
+    while (i < archivos.length) {
+      const n = i++, a = archivos[n], fila = filas[n];
+      try {
+        if (!["image/jpeg", "image/png"].includes(a.type)) throw new Error("solo JPG o PNG");
+        if (a.size > MAX_BYTES) throw new Error("pesa más de 15 MB");
+        fila.textContent = "Subiendo…";
+        const { url, campos } = await api("POST", "/subidas", { nombre: a.name, tipo: a.type });
+        const form = new FormData();
+        Object.entries(campos).forEach(([k, v]) => form.append(k, v));
+        form.append("file", a); // el archivo debe ir al final del formulario
+        const r = await fetch(url, { method: "POST", body: form });
+        if (!r.ok) throw new Error(`S3 respondió ${r.status}`);
+        fila.textContent = "✓";
+        fila.style.color = "var(--ok)";
+      } catch (e) {
+        fila.textContent = e.message;
+        fila.style.color = "var(--acento)";
+      }
+    }
+  };
+  await Promise.all([trabajador(), trabajador(), trabajador()]);
+  if (estado.q) $("#q").value = estado.q = "";
+  cargar();
+  setTimeout(() => { panel.replaceChildren(); panel.classList.add("oculto"); }, 4000);
+}
+
+// ---------- Inicio ----------
+
+token().then(entrar).catch(() => mostrarAcceso("entrar"));
+</script>
+</body>
+</html>
