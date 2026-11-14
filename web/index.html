@@ -7,7 +7,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.css"
+      integrity="sha512-6AYkNPc8EvA9WwC0CvbRQHWpK1zV1+QeW+lVBfYqN2zTfG9IfWMRMyUDOw6GdF5US0poI/C/pz8tkiL+nfmYHg==" crossorigin="anonymous">
 <script src="config.js"></script>
 <style>
   :root {
@@ -457,15 +458,17 @@ function miUbicacion() {
 
 const mapaEstado = { mapa: null, marcadores: [], cargando: null };
 
-function cargarScript(src) {
-  return new Promise((ok, falla) => document.head.append(h("script", { src, onload: ok, onerror: falla })));
+// Con integrity: si el CDN sirviera otro archivo, el navegador no lo ejecuta (la página maneja tokens de sesión)
+function cargarScript(src, integrity) {
+  return new Promise((ok, falla) => document.head.append(h("script", { src, integrity, crossOrigin: "anonymous", onload: ok, onerror: falla })));
 }
 
 async function prepararMapa() {
   if (mapaEstado.mapa) return mapaEstado.mapa;
   const [{ apiKey, region }] = await Promise.all([
     api("GET", "/mapa"),
-    window.maplibregl ? null : cargarScript("https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.js"),
+    window.maplibregl ? null : cargarScript("https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.js",
+      "sha512-x8Bt/82VRs91xVTqHDpQ1t8c4qit3QCRbo9BVqnUsyw5yKqzvL4BAgcz7R34BDCiCwx9ypXPTnxPaNnazQz1ag=="),
   ]);
   const mapa = new maplibregl.Map({
     container: "mapa",

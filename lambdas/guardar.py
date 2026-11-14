@@ -106,8 +106,8 @@ def geocodificar(gps):
         lugar = {k: v for k, v in lugar.items() if v}
         nombre = ", ".join(lugar[k] for k in ("ciudad", "region", "pais") if k in lugar)
         return {"nombre": nombre, **lugar} if nombre else None
-    except Exception:  # noqa: BLE001 — cualquier falla de Location deja la foto sin nombre de lugar, nunca sin foto
-        log.exception("Amazon Location no pudo nombrar %s", gps)
+    except Exception as e:  # noqa: BLE001 — cualquier falla de Location deja la foto sin nombre de lugar, nunca sin foto
+        log.warning("Amazon Location no pudo nombrar el lugar: %s", type(e).__name__)  # sin coordenadas en los logs
         return None
 
 
