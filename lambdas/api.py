@@ -13,9 +13,10 @@ import os
 import re
 import unicodedata
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import boto3
 from botocore.config import Config
+from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Key
 
 log = logging.getLogger()
@@ -28,6 +29,10 @@ MAX_BYTES = 15 * 1024 * 1024  # límite de Rekognition para imágenes en S3
 VIGENCIA_URL = 3600
 POR_PAGINA = 60
 EXPIRA_PENDIENTE = 24 * 3600  # una subida que nunca llega se borra sola por TTL
+# Tope de gasto por persona: cada subida cuesta 3 llamadas a Rekognition + Nova. Cuenta las URLs pedidas, no las fotos
+# que llegan, para que pedir URLs en bucle también se frene
+SUBIDAS_DIA = int(os.environ.get("SUBIDAS_DIA", "50"))
+COLOMBIA = timezone(timedelta(hours=-5))
 
 dynamo = boto3.resource("dynamodb")
 tabla = dynamo.Table(TABLA)
@@ -64,10 +69,26 @@ def resumen(item):
     return foto
 
 
+def descontar_cupo(usuario):
+    # Contador atómico por día: la condición impide pasar el tope aunque lleguen peticiones simultáneas
+    hoy = datetime.now(COLOMBIA)
+    try:
+        tabla.update_item(
+            Key={"PK": f"U#{usuario}", "SK": f"CUPO#{hoy:%Y-%m-%d}"},
+            UpdateExpression="ADD subidas :uno SET expira = if_not_exists(expira, :expira)",
+            ConditionExpression="attribute_not_exists(subidas) OR subidas < :tope",
+            ExpressionAttributeValues={":uno": 1, ":tope": SUBIDAS_DIA, ":expira": int(hoy.timestamp()) + 2 * 86400})
+    except ClientError as e:
+        if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
+            raise
+        raise ErrorCliente(429, f"Llegaste al límite de {SUBIDAS_DIA} fotos por día; mañana puedes subir más")
+
+
 def crear_subida(usuario, cuerpo):
     tipo = cuerpo.get("tipo")
     if tipo not in TIPOS:
         raise ErrorCliente(400, "Solo se aceptan fotos JPG o PNG")
+    descontar_cupo(usuario)
     foto = uuid.uuid4().hex
     key = f"originales/{usuario}/{foto}.{TIPOS[tipo]}"
     ahora = datetime.now(timezone.utc)

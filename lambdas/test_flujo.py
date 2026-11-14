@@ -106,7 +106,7 @@ def test_flujo_completo(aws, traductor):
 
     assert llamar("DELETE /fotos/{id}", foto=foto) == (204, None)
     tabla = boto3.resource("dynamodb").Table("revela-test")
-    assert tabla.scan()["Items"] == []
+    assert [i["SK"][:5] for i in tabla.scan()["Items"]] == ["CUPO#"]  # el cupo del día no se devuelve al borrar
     assert boto3.client("s3").list_objects_v2(Bucket="revela-test")["KeyCount"] == 0
     assert llamar("GET /fotos/{id}", foto=foto)[0] == 404
 
@@ -125,6 +125,23 @@ def test_sobrescribir_originales_no_cambia_lo_mostrado(aws, traductor):
 
     llamar("DELETE /fotos/{id}", foto=foto)
     assert s3.list_objects_v2(Bucket="revela-test")["KeyCount"] == 0  # borra también lo sobrescrito
+
+
+def test_tope_de_subidas_por_dia(aws, monkeypatch):
+    global USUARIO
+    monkeypatch.setattr(api, "SUBIDAS_DIA", 3)
+    assert [llamar("POST /subidas", {"tipo": "image/jpeg"})[0] for _ in range(4)] == [201, 201, 201, 429]
+    assert "3 fotos por día" in llamar("POST /subidas", {"tipo": "image/jpeg"})[1]["error"]
+    assert llamar("POST /subidas", {"tipo": "image/gif"})[0] == 400  # lo inválido no gasta cupo
+
+    # El contador no aparece como foto ni como etiqueta, y cada usuario tiene el suyo
+    assert len(llamar("GET /fotos")[1]["fotos"]) == 3
+    assert llamar("GET /etiquetas")[1]["etiquetas"] == []
+    original, USUARIO = USUARIO, "2222-bbbb"
+    try:
+        assert llamar("POST /subidas", {"tipo": "image/jpeg"})[0] == 201
+    finally:
+        USUARIO = original
 
 
 def test_cuarentena_no_indexa_ni_entrega_urls(aws, traductor):
@@ -183,7 +200,7 @@ def test_borrada_durante_el_analisis_no_resucita(aws):
     imagen = procesar.lambda_handler({"bucket": "revela-test", "key": key}, None)
     llamar("DELETE /fotos/{id}", foto=subida["foto"])
     assert guardar.lambda_handler({"bucket": "revela-test", "key": imagen["revisada"], "imagen": imagen}, None)["estado"] == "BORRADA"
-    assert boto3.resource("dynamodb").Table("revela-test").scan()["Items"] == []
+    assert [i["SK"][:5] for i in boto3.resource("dynamodb").Table("revela-test").scan()["Items"]] == ["CUPO#"]
     assert boto3.client("s3").list_objects_v2(Bucket="revela-test")["KeyCount"] == 0
 
 

@@ -66,7 +66,7 @@ resource "aws_iam_role_policy" "api" {
     Statement = [
       {
         Effect   = "Allow"
-        Action   = ["dynamodb:PutItem", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:BatchGetItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem"]
+        Action   = ["dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:GetItem", "dynamodb:Query", "dynamodb:BatchGetItem", "dynamodb:DeleteItem", "dynamodb:BatchWriteItem"]
         Resource = [var.tabla_arn, "${var.tabla_arn}/index/por-fecha"]
       },
       # Las URLs prefirmadas valen con los permisos del rol que las firma
@@ -93,8 +93,9 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      TABLA  = var.tabla
-      BUCKET = var.bucket
+      TABLA       = var.tabla
+      BUCKET      = var.bucket
+      SUBIDAS_DIA = "50"
     }
   }
 

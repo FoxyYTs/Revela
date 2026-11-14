@@ -55,4 +55,5 @@ Destruir: `terraform destroy` (los buckets tienen `force_destroy`).
   los bytes que leyó: Rekognition y la app usan esa copia, así que reusar la URL de subida no repite el gasto
   ni permite sobrescribir una foto ya moderada.
 - Las fotos en cuarentena nunca salen con URL; las miniaturas no llevan EXIF (no exponen el GPS).
-- La API limita a 10 peticiones/s (ráfaga 20) para acotar el gasto en Rekognition.
+- La API limita a 10 peticiones/s (ráfaga 20) en total y cada usuario puede pedir 50 subidas por día (`SUBIDAS_DIA`,
+  contador atómico en DynamoDB) para acotar el gasto en Rekognition y Nova.
