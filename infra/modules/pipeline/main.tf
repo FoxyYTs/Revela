@@ -116,8 +116,8 @@ resource "aws_iam_role_policy" "procesar" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      { Effect = "Allow", Action = "s3:GetObject", Resource = "${var.bucket_arn}/originales/*" },
-      { Effect = "Allow", Action = "s3:PutObject", Resource = "${var.bucket_arn}/miniaturas/*" },
+      { Effect = "Allow", Action = ["s3:GetObject", "s3:DeleteObject"], Resource = "${var.bucket_arn}/originales/*" },
+      { Effect = "Allow", Action = "s3:PutObject", Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*"] },
     ]
   })
 }
@@ -165,7 +165,7 @@ resource "aws_iam_role_policy" "guardar" {
     Version = "2012-10-17"
     Statement = [
       { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:BatchWriteItem"], Resource = var.tabla_arn },
-      { Effect = "Allow", Action = "s3:DeleteObject", Resource = "${var.bucket_arn}/miniaturas/*" },
+      { Effect = "Allow", Action = "s3:DeleteObject", Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*"] },
       {
         Effect = "Allow"
         Action = "bedrock:InvokeModel"
@@ -248,7 +248,7 @@ resource "aws_iam_role_policy" "flujo" {
       { Effect = "Allow", Action = "lambda:InvokeFunction", Resource = [aws_lambda_function.procesar.arn, aws_lambda_function.guardar.arn] },
       # Rekognition lee la imagen de S3 con los permisos de quien lo llama
       { Effect = "Allow", Action = ["rekognition:DetectLabels", "rekognition:DetectText", "rekognition:DetectModerationLabels"], Resource = "*" },
-      { Effect = "Allow", Action = "s3:GetObject", Resource = "${var.bucket_arn}/originales/*" },
+      { Effect = "Allow", Action = "s3:GetObject", Resource = "${var.bucket_arn}/fotos/*" },
       { Effect = "Allow", Action = "dynamodb:UpdateItem", Resource = var.tabla_arn },
     ]
   })

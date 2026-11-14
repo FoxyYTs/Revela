@@ -81,7 +81,7 @@ def crear_subida(usuario, cuerpo):
     # S3 rechaza el POST si el tipo, la key o el tamaño no coinciden con lo firmado
     post = s3.generate_presigned_post(
         BUCKET, key, Fields={"Content-Type": tipo},
-        Conditions=[{"Content-Type": tipo}, ["content-length-range", 1, MAX_BYTES]], ExpiresIn=300)
+        Conditions=[{"Content-Type": tipo}, ["content-length-range", 1, MAX_BYTES]], ExpiresIn=120)
     return 201, {"foto": foto, "url": post["url"], "campos": post["fields"]}
 
 
@@ -134,14 +134,14 @@ def detalle(usuario, foto):
     datos = resumen(item)
     datos.update({k: item.get(k) for k in ("etiquetas", "texto", "camara", "gps", "ancho", "alto", "fecha_toma", "moderacion")})
     if item["estado"] == "LISTA":
-        datos["original"] = firmar(item["original"])
+        datos["original"] = firmar(item.get("revisada", item["original"]))  # las de antes de fotos/ no tienen copia
     return 200, datos
 
 
 def borrar(usuario, foto):
     item = obtener(usuario, foto)
     pk = f"U#{usuario}"
-    s3.delete_objects(Bucket=BUCKET, Delete={"Objects": [{"Key": k} for k in (item["original"], item.get("miniatura")) if k]})
+    s3.delete_objects(Bucket=BUCKET, Delete={"Objects": [{"Key": k} for k in (item["original"], item.get("revisada"), item.get("miniatura")) if k]})
     with tabla.batch_writer() as lote:
         for sk in item.get("claves", []):
             lote.delete_item(Key={"PK": pk, "SK": sk})

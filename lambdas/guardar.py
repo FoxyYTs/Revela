@@ -103,7 +103,7 @@ def lambda_handler(event, _context):
     if not actual:
         # El usuario la borró mientras se analizaba: no se resucita y se limpia la miniatura
         log.info("Foto %s ya no existe; se descarta", foto)
-        s3.delete_object(Bucket=event["bucket"], Key=imagen["miniatura"])
+        s3.delete_objects(Bucket=event["bucket"], Delete={"Objects": [{"Key": imagen["miniatura"]}, {"Key": imagen["revisada"]}]})
         return {"foto": foto, "estado": "BORRADA"}
 
     # Orden de la galería: fecha de toma si la cámara la guardó, si no la de subida
@@ -129,13 +129,13 @@ def lambda_handler(event, _context):
         Key={"PK": pk, "SK": f"F#{foto}"},
         UpdateExpression=("SET estado = :e, fecha_orden = :fo, fecha_toma = :ft, etiquetas = :et, etiquetas_en = :en, "
                           "texto = :tx, moderacion = :mo, ancho = :an, alto = :al, camara = :ca, gps = :gp, "
-                          "miniatura = :mi, claves = :cl REMOVE expira"),
+                          "miniatura = :mi, revisada = :rv, claves = :cl REMOVE expira"),
         ExpressionAttributeValues={
             ":e": estado, ":fo": fecha_orden, ":ft": imagen.get("fecha_toma"),
             ":et": nombres_es, ":en": nombres_en, ":tx": "\n".join(textos), ":mo": bloqueo,
             ":an": imagen["ancho"], ":al": imagen["alto"], ":ca": imagen.get("camara"),
             ":gp": {k: Decimal(str(v)) for k, v in gps.items()} if gps else None,
-            ":mi": imagen["miniatura"], ":cl": list(claves),
+            ":mi": imagen["miniatura"], ":rv": imagen["revisada"], ":cl": list(claves),
         },
     )
     log.info("Foto %s → %s (%d etiquetas, %d índices)", foto, estado, len(nombres_es), len(claves))

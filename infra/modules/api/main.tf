@@ -71,7 +71,7 @@ resource "aws_iam_role_policy" "api" {
       },
       # Las URLs prefirmadas valen con los permisos del rol que las firma
       { Effect = "Allow", Action = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"], Resource = "${var.bucket_arn}/originales/*" },
-      { Effect = "Allow", Action = ["s3:GetObject", "s3:DeleteObject"], Resource = "${var.bucket_arn}/miniaturas/*" },
+      { Effect = "Allow", Action = ["s3:GetObject", "s3:DeleteObject"], Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*"] },
     ]
   })
 }

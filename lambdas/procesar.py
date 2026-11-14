@@ -1,7 +1,10 @@
 """Paso del flujo de Step Functions: miniatura + metadatos EXIF de una foto.
 
 Entrada: {"bucket": ..., "key": "originales/<usuario>/<foto>.<ext>"}
-Salida:  {"ancho", "alto", "fecha_toma", "camara", "gps", "miniatura"}
+Salida:  {"ancho", "alto", "fecha_toma", "camara", "gps", "miniatura", "revisada"}
+
+Copia los bytes que leyó a fotos/ y borra el original: Rekognition analiza esa copia y la app solo
+sirve esa copia, así que reusar la URL prefirmada para sobrescribir originales/ no cambia lo mostrado.
 """
 import io
 import logging
@@ -54,7 +57,8 @@ def leer_exif(img):
 
 def lambda_handler(event, _context):
     bucket, key = event["bucket"], event["key"]
-    original = s3.get_object(Bucket=bucket, Key=key)["Body"].read()
+    objeto = s3.get_object(Bucket=bucket, Key=key)
+    original = objeto["Body"].read()
 
     img = Image.open(io.BytesIO(original))
     fecha, camara, gps = leer_exif(img)
@@ -66,7 +70,12 @@ def lambda_handler(event, _context):
     salida = io.BytesIO()
     img.convert("RGB").save(salida, "JPEG", quality=82, optimize=True)
 
-    miniatura = "miniaturas/" + key.split("/", 1)[1].rsplit(".", 1)[0] + ".jpg"
+    resto = key.split("/", 1)[1]
+    miniatura = "miniaturas/" + resto.rsplit(".", 1)[0] + ".jpg"
     s3.put_object(Bucket=bucket, Key=miniatura, Body=salida.getvalue(), ContentType="image/jpeg")
+    revisada = "fotos/" + resto
+    s3.put_object(Bucket=bucket, Key=revisada, Body=original, ContentType=objeto.get("ContentType", "image/jpeg"))
+    s3.delete_object(Bucket=bucket, Key=key)
 
-    return {"ancho": ancho, "alto": alto, "fecha_toma": fecha, "camara": camara, "gps": gps, "miniatura": miniatura}
+    return {"ancho": ancho, "alto": alto, "fecha_toma": fecha, "camara": camara, "gps": gps,
+            "miniatura": miniatura, "revisada": revisada}

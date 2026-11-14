@@ -7,11 +7,13 @@ análisis en paralelo con Step Functions (etiquetas, OCR, moderación, miniatura
 Navegador ──Cognito (login)──► API Gateway HTTP (JWT) ──► Lambda api ──► DynamoDB
     │                                                        │
     └──POST prefirmado──► S3 originales/ ──► SQS ──► EventBridge Pipes ──► Step Functions
-                                                                          ├─ Rekognition DetectLabels
-                                                                          ├─ Rekognition DetectText
-                                                                          ├─ Rekognition DetectModerationLabels
-                                                                          ├─ Lambda procesar (miniatura + EXIF, Pillow)
-                                                                          └─► Lambda guardar (Nova Micro traduce) ──► DynamoDB
+                                                                          1. Reclamar (DynamoDB, una vez por foto)
+                                                                          2. Lambda procesar (miniatura + EXIF, copia a fotos/)
+                                                                          3. En paralelo sobre fotos/:
+                                                                             ├─ Rekognition DetectLabels
+                                                                             ├─ Rekognition DetectText
+                                                                             └─ Rekognition DetectModerationLabels
+                                                                          4. Lambda guardar (Nova Micro traduce) ──► DynamoDB
 Web: S3 privado ◄── CloudFront + OAC
 ```
 
@@ -49,5 +51,8 @@ Destruir: `terraform destroy` (los buckets tienen `force_destroy`).
 
 - Amazon Translate no está habilitado en la cuenta → las etiquetas se traducen con Nova Micro; si falla, quedan en inglés.
 - Concurrencia de Lambda de la cuenta = 10 compartida: Step Functions reintenta con espera si se llena.
+- Cada foto se analiza una sola vez (paso `Reclamar`, escritura condicional en DynamoDB) y `procesar` copia a `fotos/`
+  los bytes que leyó: Rekognition y la app usan esa copia, así que reusar la URL de subida no repite el gasto
+  ni permite sobrescribir una foto ya moderada.
 - Las fotos en cuarentena nunca salen con URL; las miniaturas no llevan EXIF (no exponen el GPS).
 - La API limita a 10 peticiones/s (ráfaga 20) para acotar el gasto en Rekognition.

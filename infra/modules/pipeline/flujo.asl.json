@@ -1,5 +1,5 @@
 {
-  "Comment": "Revela: analiza cada foto subida (etiquetas, texto, moderación y miniatura en paralelo) y la guarda",
+  "Comment": "Revela: reclama la foto una sola vez, la copia a fotos/, la analiza (etiquetas, texto y moderación en paralelo) y la guarda",
   "QueryLanguage": "JSONata",
   "StartAt": "Leer evento",
   "States": {
@@ -7,6 +7,41 @@
       "Type": "Pass",
       "Comment": "EventBridge Pipes entrega el lote de SQS como arreglo; el body es la notificación de S3",
       "Output": "{% ($m := $type($states.input) = 'array' ? $states.input[0] : $states.input; $s3 := $parse($m.body).Records[0].s3; {'bucket': $s3.bucket.name, 'key': $s3.object.key}) %}",
+      "Next": "Reclamar"
+    },
+    "Reclamar": {
+      "Type": "Task",
+      "Comment": "Una sola ejecución por foto: reusar la URL prefirmada o un mensaje duplicado de SQS no vuelve a gastar en Rekognition ni Nova",
+      "Resource": "arn:aws:states:::dynamodb:updateItem",
+      "Arguments": {
+        "TableName": "${tabla}",
+        "Key": {
+          "PK": { "S": "{% 'U#' & $split($states.input.key, '/')[1] %}" },
+          "SK": { "S": "{% 'F#' & $split($split($states.input.key, '/')[2], '.')[0] %}" }
+        },
+        "UpdateExpression": "SET analisis = :ahora",
+        "ConditionExpression": "attribute_exists(PK) AND attribute_not_exists(analisis)",
+        "ExpressionAttributeValues": { ":ahora": { "S": "{% $states.context.Execution.StartTime %}" } }
+      },
+      "Output": "{% $states.input %}",
+      "Catch": [
+        { "ErrorEquals": ["DynamoDB.ConditionalCheckFailedException"], "Next": "Ya reclamada" },
+        { "ErrorEquals": ["States.ALL"], "Output": "{% $states.input %}", "Next": "Marcar error" }
+      ],
+      "Next": "Miniatura y EXIF"
+    },
+    "Ya reclamada": {
+      "Type": "Succeed",
+      "Comment": "Otra ejecución ya analizó esta foto, o el usuario la borró"
+    },
+    "Miniatura y EXIF": {
+      "Type": "Task",
+      "Comment": "Copia a fotos/ los bytes que leyó: desde aquí todo usa esa copia y nunca originales/",
+      "Resource": "arn:aws:states:::lambda:invoke",
+      "Arguments": { "FunctionName": "${procesar}", "Payload": "{% $states.input %}" },
+      "Output": "{% {'bucket': $states.input.bucket, 'key': $states.result.Payload.revisada, 'imagen': $states.result.Payload} %}",
+      "Retry": [${reintento_lambda}],
+      "Catch": [{ "ErrorEquals": ["States.ALL"], "Output": "{% $states.input %}", "Next": "Marcar error" }],
       "Next": "Analizar"
     },
     "Analizar": {
@@ -59,22 +94,9 @@
               "End": true
             }
           }
-        },
-        {
-          "StartAt": "Miniatura y EXIF",
-          "States": {
-            "Miniatura y EXIF": {
-              "Type": "Task",
-              "Resource": "arn:aws:states:::lambda:invoke",
-              "Arguments": { "FunctionName": "${procesar}", "Payload": "{% $states.input %}" },
-              "Output": "{% $states.result.Payload %}",
-              "Retry": [${reintento_lambda}],
-              "End": true
-            }
-          }
         }
       ],
-      "Output": "{% {'bucket': $states.input.bucket, 'key': $states.input.key, 'etiquetas': $states.result[0], 'textos': $states.result[1], 'moderacion': $states.result[2], 'imagen': $states.result[3]} %}",
+      "Output": "{% {'bucket': $states.input.bucket, 'key': $states.input.key, 'etiquetas': $states.result[0], 'textos': $states.result[1], 'moderacion': $states.result[2], 'imagen': $states.input.imagen} %}",
       "Catch": [{ "ErrorEquals": ["States.ALL"], "Output": "{% $states.input %}", "Next": "Marcar error" }],
       "Next": "Guardar"
     },

@@ -57,9 +57,9 @@ def subir_y_analizar(traductor, etiquetas=PERRO, textos=None, moderacion=None, t
 
     if etiquetas:
         traductor.add_response("converse", respuesta_nova(traduccion))
-    resultado = guardar.lambda_handler({"bucket": "revela-test", "key": key, "etiquetas": etiquetas, "textos": textos,
-                                        "moderacion": moderacion, "imagen": procesar.lambda_handler(
-                                            {"bucket": "revela-test", "key": key}, None)}, None)
+    imagen = procesar.lambda_handler({"bucket": "revela-test", "key": key}, None)
+    resultado = guardar.lambda_handler({"bucket": "revela-test", "key": imagen["revisada"], "etiquetas": etiquetas,
+                                        "textos": textos, "moderacion": moderacion, "imagen": imagen}, None)
     return subida["foto"], resultado
 
 
@@ -111,6 +111,22 @@ def test_flujo_completo(aws, traductor):
     assert llamar("GET /fotos/{id}", foto=foto)[0] == 404
 
 
+def test_sobrescribir_originales_no_cambia_lo_mostrado(aws, traductor):
+    # Reusar la URL prefirmada después del análisis escribe en originales/, pero la app sirve fotos/
+    foto, _ = subir_y_analizar(traductor)
+    s3 = boto3.client("s3")
+    assert s3.list_objects_v2(Bucket="revela-test", Prefix="originales/")["KeyCount"] == 0
+    revisada = s3.get_object(Bucket="revela-test", Key=f"fotos/{USUARIO}/{foto}.jpg")["Body"].read()
+    s3.put_object(Bucket="revela-test", Key=f"originales/{USUARIO}/{foto}.jpg", Body=b"otra cosa")
+
+    url = llamar("GET /fotos/{id}", foto=foto)[1]["original"]
+    assert f"/fotos/{USUARIO}/{foto}.jpg" in url
+    assert s3.get_object(Bucket="revela-test", Key=f"fotos/{USUARIO}/{foto}.jpg")["Body"].read() == revisada
+
+    llamar("DELETE /fotos/{id}", foto=foto)
+    assert s3.list_objects_v2(Bucket="revela-test")["KeyCount"] == 0  # borra también lo sobrescrito
+
+
 def test_cuarentena_no_indexa_ni_entrega_urls(aws, traductor):
     moderacion = [{"Name": "Graphic Violence", "ParentName": "Violence", "Confidence": 93.0},
                   {"Name": "Swimwear or Underwear", "ParentName": "", "Confidence": 99.0}]
@@ -143,8 +159,8 @@ def test_nova_falla_quedan_en_ingles(aws, traductor):
     status, subida = llamar("POST /subidas", {"tipo": "image/jpeg"})
     key = subida["campos"]["key"]
     boto3.client("s3").put_object(Bucket="revela-test", Key=key, Body=jpeg())
-    guardar.lambda_handler({"bucket": "revela-test", "key": key, "etiquetas": PERRO,
-                            "imagen": procesar.lambda_handler({"bucket": "revela-test", "key": key}, None)}, None)
+    imagen = procesar.lambda_handler({"bucket": "revela-test", "key": key}, None)
+    guardar.lambda_handler({"bucket": "revela-test", "key": imagen["revisada"], "etiquetas": PERRO, "imagen": imagen}, None)
     assert llamar("GET /fotos/{id}", foto=subida["foto"])[1]["etiquetas"] == ["Dog", "Beach"]
 
 
@@ -155,7 +171,7 @@ def test_reprocesar_reemplaza_indices(aws, traductor):
     imagen = procesar.lambda_handler({"bucket": "revela-test", "key": key}, None)
     for etiquetas, traduccion in ((PERRO, '```json\n["Perro", "Playa"]\n```'), ([{"Name": "Cat", "Confidence": 90.0}], '["Gato"]')):
         traductor.add_response("converse", respuesta_nova(traduccion))
-        guardar.lambda_handler({"bucket": "revela-test", "key": key, "etiquetas": etiquetas, "imagen": imagen}, None)
+        guardar.lambda_handler({"bucket": "revela-test", "key": imagen["revisada"], "etiquetas": etiquetas, "imagen": imagen}, None)
     assert llamar("GET /fotos", params={"q": "perro"})[1]["fotos"] == []
     assert len(llamar("GET /fotos", params={"q": "gato"})[1]["fotos"]) == 1
 
@@ -166,7 +182,7 @@ def test_borrada_durante_el_analisis_no_resucita(aws):
     boto3.client("s3").put_object(Bucket="revela-test", Key=key, Body=jpeg())
     imagen = procesar.lambda_handler({"bucket": "revela-test", "key": key}, None)
     llamar("DELETE /fotos/{id}", foto=subida["foto"])
-    assert guardar.lambda_handler({"bucket": "revela-test", "key": key, "imagen": imagen}, None)["estado"] == "BORRADA"
+    assert guardar.lambda_handler({"bucket": "revela-test", "key": imagen["revisada"], "imagen": imagen}, None)["estado"] == "BORRADA"
     assert boto3.resource("dynamodb").Table("revela-test").scan()["Items"] == []
     assert boto3.client("s3").list_objects_v2(Bucket="revela-test")["KeyCount"] == 0
 
