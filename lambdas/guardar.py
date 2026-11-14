@@ -8,6 +8,7 @@ Modelo de la tabla (una sola tabla, PK = "U#<usuario>"):
   SK "F#<foto>"                  → la foto (GSI por-fecha: PK + fecha_orden)
   SK "E#<etiqueta>#<fecha_orden>" → índice por etiqueta de Rekognition (es y en)
   SK "T#<palabra>#<fecha_orden>"  → índice por palabra leída con OCR
+  SK "L#<lugar>#<fecha_orden>"    → índice por ciudad, departamento y país (Amazon Location)
 """
 import json
 import logging
@@ -38,6 +39,17 @@ INSTRUCCION = (
     "con espacios normales.\n"
     'Ejemplo de etiquetas: ["Sunglasses", "Mobile Phone", "Coat"] → ["Gafas de sol", "Teléfono móvil", "Abrigo"]')
 MAX_DESCRIPCION = 300
+
+_lugares = None
+
+
+def lugares():
+    # Perezoso: si el boto3 del runtime no trae geo-places, solo se pierde el nombre del lugar, no la foto
+    global _lugares
+    if _lugares is None:
+        _lugares = boto3.client("geo-places")
+    return _lugares
+
 
 tabla = boto3.resource("dynamodb").Table(TABLA)
 s3 = boto3.client("s3")
@@ -81,6 +93,24 @@ def describir(bucket, miniatura, nombres, textos):
     return list(nombres), None
 
 
+def geocodificar(gps):
+    """Coordenadas → {"nombre": "Rionegro, Antioquia, Colombia", "ciudad", "region", "pais"} o None."""
+    try:
+        r = lugares().reverse_geocode(QueryPosition=[float(gps["lon"]), float(gps["lat"])], MaxResults=1, Language="es",
+                                      IntendedUse="Storage")  # el resultado se guarda en DynamoDB: los términos exigen Storage
+        if not r.get("ResultItems"):
+            return None
+        d = r["ResultItems"][0].get("Address", {})
+        lugar = {"ciudad": d.get("Locality"), "region": (d.get("Region") or {}).get("Name"),
+                 "pais": (d.get("Country") or {}).get("Name")}
+        lugar = {k: v for k, v in lugar.items() if v}
+        nombre = ", ".join(lugar[k] for k in ("ciudad", "region", "pais") if k in lugar)
+        return {"nombre": nombre, **lugar} if nombre else None
+    except Exception:  # noqa: BLE001 — cualquier falla de Location deja la foto sin nombre de lugar, nunca sin foto
+        log.exception("Amazon Location no pudo nombrar %s", gps)
+        return None
+
+
 def en_cuarentena(moderacion):
     return sorted({m["Name"] for m in moderacion
                    if m.get("Confidence", 0) >= UMBRAL_MODERACION
@@ -118,6 +148,13 @@ def lambda_handler(event, _context):
     nombres_es, descripcion = (describir(event["bucket"], imagen["miniatura"], nombres_en, textos)
                                if estado == "LISTA" else (list(nombres_en), None))
 
+    # GPS de la foto; si el celular lo borró, la ubicación que dio el navegador al subir
+    gps = imagen.get("gps")
+    fuente = "foto" if gps else None
+    if not gps and actual.get("gps_subida"):
+        gps, fuente = {k: float(v) for k, v in actual["gps_subida"].items()}, "subida"
+    lugar = geocodificar(gps) if gps and estado == "LISTA" else None
+
     # Orden de la galería: fecha de toma si la cámara la guardó, si no la de subida
     fecha_orden = f"{imagen.get('fecha_toma') or actual['fecha_subida']}#{foto}"
 
@@ -128,6 +165,8 @@ def lambda_handler(event, _context):
                 claves.setdefault(f"E#{normalizar(nombre)}#{fecha_orden}", es)
         for p in palabras(textos):
             claves.setdefault(f"T#{p}#{fecha_orden}", p)
+        for nombre in {(lugar or {}).get(k) for k in ("ciudad", "region", "pais")} - {None}:
+            claves.setdefault(f"L#{normalizar(nombre)}#{fecha_orden}", nombre)
 
     # Si la foto se reprocesa (SQS entrega al menos una vez) se reemplazan los índices viejos
     with tabla.batch_writer(overwrite_by_pkeys=["PK", "SK"]) as lote:
@@ -136,17 +175,16 @@ def lambda_handler(event, _context):
         for sk, nombre in claves.items():
             lote.put_item(Item={"PK": pk, "SK": sk, "foto": foto, "etiqueta": nombre})
 
-    gps = imagen.get("gps")
     tabla.update_item(
         Key={"PK": pk, "SK": f"F#{foto}"},
         UpdateExpression=("SET estado = :e, fecha_orden = :fo, fecha_toma = :ft, etiquetas = :et, etiquetas_en = :en, "
-                          "texto = :tx, descripcion = :de, moderacion = :mo, ancho = :an, alto = :al, camara = :ca, gps = :gp, "
+                          "texto = :tx, descripcion = :de, moderacion = :mo, ancho = :an, alto = :al, camara = :ca, gps = :gp, gps_fuente = :gf, lugar = :lu, "
                           "miniatura = :mi, revisada = :rv, claves = :cl REMOVE expira"),
         ExpressionAttributeValues={
             ":e": estado, ":fo": fecha_orden, ":ft": imagen.get("fecha_toma"),
             ":et": nombres_es, ":en": nombres_en, ":tx": "\n".join(textos), ":de": descripcion, ":mo": bloqueo,
             ":an": imagen["ancho"], ":al": imagen["alto"], ":ca": imagen.get("camara"),
-            ":gp": {k: Decimal(str(v)) for k, v in gps.items()} if gps else None,
+            ":gp": {k: Decimal(str(v)) for k, v in gps.items()} if gps else None, ":gf": fuente, ":lu": lugar,
             ":mi": imagen["miniatura"], ":rv": imagen["revisada"], ":cl": list(claves),
         },
     )

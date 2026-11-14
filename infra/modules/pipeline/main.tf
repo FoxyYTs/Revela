@@ -167,6 +167,7 @@ resource "aws_iam_role_policy" "guardar" {
       { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:BatchWriteItem"], Resource = var.tabla_arn },
       { Effect = "Allow", Action = "s3:DeleteObject", Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*"] },
       { Effect = "Allow", Action = "s3:GetObject", Resource = "${var.bucket_arn}/miniaturas/*" }, # Nova describe la miniatura
+      { Effect = "Allow", Action = "geo-places:ReverseGeocode", Resource = "arn:aws:geo-places:us-east-1::provider/default" },
       {
         Effect = "Allow"
         Action = "bedrock:InvokeModel"

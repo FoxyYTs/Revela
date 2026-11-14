@@ -13,8 +13,9 @@ Navegador ──Cognito (login)──► API Gateway HTTP (JWT) ──► Lambda
                                                                              ├─ Rekognition DetectLabels
                                                                              ├─ Rekognition DetectText
                                                                              └─ Rekognition DetectModerationLabels
-                                                                          4. Lambda guardar (Nova Lite: pie de foto + traducción) ──► DynamoDB
-Web: S3 privado ◄── CloudFront + OAC
+                                                                          4. Lambda guardar (Nova Lite: pie de foto + traducción;
+                                                                             Amazon Location: dirección del GPS) ──► DynamoDB
+Web: S3 privado ◄── CloudFront + OAC          Mapa: MapLibre + mosaicos de Amazon Location (API key solo para la web)
 ```
 
 | Carpeta | Contenido |
@@ -52,6 +53,11 @@ Destruir: `terraform destroy` (los buckets tienen `force_destroy`).
 - Nova Lite mira la miniatura (480 px) y en una sola llamada escribe el pie de foto y traduce las etiquetas
   (Amazon Translate no está habilitado en la cuenta). Si falla, la foto queda sin pie y con etiquetas en inglés.
   Las fotos en cuarentena no se le envían.
+- Lugares: el GPS sale del EXIF; Android e iOS lo borran al compartir desde el celular, así que la página manda la
+  ubicación del navegador al subir (casilla "Mi ubicación") y la foto queda marcada como "ubicación al subir".
+  Amazon Location pone el nombre (ciudad, departamento, país) con `IntendedUse=Storage` porque se guarda, y se puede
+  buscar por él. La API key del mapa va en un stack de CloudFormation (el provider no tiene recurso para keys v2)
+  y solo sirve para mosaicos desde el dominio de la web.
 - Concurrencia de Lambda de la cuenta = 10 compartida: Step Functions reintenta con espera si se llena.
 - Cada foto se analiza una sola vez (paso `Reclamar`, escritura condicional en DynamoDB) y `procesar` copia a `fotos/`
   los bytes que leyó: Rekognition y la app usan esa copia, así que reusar la URL de subida no repite el gasto

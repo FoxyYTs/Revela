@@ -5,6 +5,8 @@ GET    /fotos         → galería por fecha (?siguiente=cursor) o búsqueda (?q
 GET    /fotos/{id}    → detalle con la URL del original
 DELETE /fotos/{id}    → borra la foto, la miniatura y sus índices
 GET    /etiquetas     → etiquetas del usuario con cuántas fotos tiene cada una
+GET    /lugares       → fotos con ubicación, para el mapa
+GET    /mapa          → API key de Amazon Location (restringida a la web) para pintar el mapa
 """
 import base64
 import json
@@ -14,6 +16,7 @@ import re
 import unicodedata
 import uuid
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
@@ -33,10 +36,13 @@ EXPIRA_PENDIENTE = 24 * 3600  # una subida que nunca llega se borra sola por TTL
 # que llegan, para que pedir URLs en bucle también se frene
 SUBIDAS_DIA = int(os.environ.get("SUBIDAS_DIA", "50"))
 COLOMBIA = timezone(timedelta(hours=-5))
+MAPA_KEY = os.environ.get("MAPA_KEY", "jadg-revela-mapa")
+MAX_LUGARES = 500
 
 dynamo = boto3.resource("dynamodb")
 tabla = dynamo.Table(TABLA)
 s3 = boto3.client("s3", config=Config(signature_version="s3v4"))
+_clave_mapa = None
 
 
 class ErrorCliente(Exception):
@@ -70,6 +76,19 @@ def resumen(item):
     return foto
 
 
+def leer_ubicacion(valor):
+    """{"lat", "lon"} del navegador; se usa solo si la foto no trae GPS (Android e iOS lo borran al compartir)."""
+    if valor is None:
+        return None
+    try:
+        lat, lon = float(valor["lat"]), float(valor["lon"])
+    except (KeyError, TypeError, ValueError):
+        raise ErrorCliente(400, "Ubicación inválida")
+    if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        raise ErrorCliente(400, "Ubicación inválida")
+    return {"lat": Decimal(str(round(lat, 6))), "lon": Decimal(str(round(lon, 6)))}
+
+
 def descontar_cupo(usuario):
     # Contador atómico por día: la condición impide pasar el tope aunque lleguen peticiones simultáneas
     hoy = datetime.now(COLOMBIA)
@@ -94,12 +113,16 @@ def crear_subida(usuario, cuerpo):
     key = f"originales/{usuario}/{foto}.{TIPOS[tipo]}"
     ahora = datetime.now(timezone.utc)
 
-    tabla.put_item(Item={
+    item = {
         "PK": f"U#{usuario}", "SK": f"F#{foto}", "estado": "PROCESANDO",
         "nombre": str(cuerpo.get("nombre", ""))[:200], "original": key,
         "fecha_subida": ahora.strftime("%Y-%m-%dT%H:%M:%S"), "fecha_orden": f"{ahora:%Y-%m-%dT%H:%M:%S}#{foto}",
         "expira": int(ahora.timestamp()) + EXPIRA_PENDIENTE,
-    })
+    }
+    ubicacion = leer_ubicacion(cuerpo.get("ubicacion"))
+    if ubicacion:
+        item["gps_subida"] = ubicacion
+    tabla.put_item(Item=item)
     # S3 rechaza el POST si el tipo, la key o el tamaño no coinciden con lo firmado
     post = s3.generate_presigned_post(
         BUCKET, key, Fields={"Content-Type": tipo},
@@ -131,7 +154,7 @@ def listar(usuario, params):
 def buscar(pk, q):
     # shortcut: máximo 100 resultados sin paginar; paginar si una búsqueda llega a ese tope
     ids = []
-    for prefijo in ("E#", "T#"):
+    for prefijo in ("E#", "T#", "L#"):
         r = tabla.query(KeyConditionExpression=Key("PK").eq(pk) & Key("SK").begins_with(f"{prefijo}{q}#"),
                         ScanIndexForward=False, Limit=100)
         ids += [i["foto"] for i in r["Items"] if i["foto"] not in ids]
@@ -154,7 +177,8 @@ def obtener(usuario, foto):
 def detalle(usuario, foto):
     item = obtener(usuario, foto)
     datos = resumen(item)
-    datos.update({k: item.get(k) for k in ("etiquetas", "texto", "descripcion", "camara", "gps", "ancho", "alto", "fecha_toma", "moderacion")})
+    datos.update({k: item.get(k) for k in ("etiquetas", "texto", "descripcion", "camara", "gps", "gps_fuente", "lugar", "ancho", "alto",
+                                       "fecha_toma", "moderacion")})
     if item["estado"] == "LISTA":
         datos["original"] = firmar(item.get("revisada", item["original"]))  # las de antes de fotos/ no tienen copia
     return 200, datos
@@ -185,6 +209,29 @@ def etiquetas(usuario):
     return 200, {"etiquetas": lista}
 
 
+def lugares(usuario):
+    # shortcut: recorre la galería entera hasta MAX_LUGARES fotos; un índice disperso por GPS si crece mucho
+    fotos, consulta = [], {"IndexName": "por-fecha", "KeyConditionExpression": Key("PK").eq(f"U#{usuario}"),
+                           "ScanIndexForward": False}
+    while len(fotos) < MAX_LUGARES:
+        r = tabla.query(**consulta)
+        fotos += [{**resumen(i), "lat": i["gps"]["lat"], "lon": i["gps"]["lon"], "lugar": (i.get("lugar") or {}).get("nombre"),
+                   "aproximada": i.get("gps_fuente") == "subida"}
+                  for i in r["Items"] if i["estado"] == "LISTA" and i.get("gps")]
+        if "LastEvaluatedKey" not in r:
+            break
+        consulta["ExclusiveStartKey"] = r["LastEvaluatedKey"]
+    return 200, {"fotos": fotos[:MAX_LUGARES]}
+
+
+def mapa():
+    # La key es pública por diseño (va al navegador) pero solo sirve para mosaicos y desde el dominio de la web
+    global _clave_mapa
+    if _clave_mapa is None:
+        _clave_mapa = boto3.client("location").describe_key(KeyName=MAPA_KEY)["Key"]
+    return 200, {"apiKey": _clave_mapa, "region": tabla.meta.client.meta.region_name}
+
+
 def lambda_handler(event, _context):
     usuario = event["requestContext"]["authorizer"]["jwt"]["claims"]["sub"]
     ruta = event["routeKey"]
@@ -210,6 +257,10 @@ def lambda_handler(event, _context):
             return responder(*borrar(usuario, foto))
         if ruta == "GET /etiquetas":
             return responder(*etiquetas(usuario))
+        if ruta == "GET /lugares":
+            return responder(*lugares(usuario))
+        if ruta == "GET /mapa":
+            return responder(*mapa())
         raise ErrorCliente(404, "Ruta no encontrada")
     except ErrorCliente as e:
         return responder(e.status, {"error": str(e)})

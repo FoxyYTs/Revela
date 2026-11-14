@@ -54,8 +54,9 @@ def traductor():
         yield s
 
 
-def subir_y_analizar(traductor, etiquetas=PERRO, textos=None, moderacion=None, traduccion=None, imagen=None):
-    status, subida = llamar("POST /subidas", {"nombre": "vacaciones.jpg", "tipo": "image/jpeg"})
+def subir_y_analizar(traductor, etiquetas=PERRO, textos=None, moderacion=None, traduccion=None, imagen=None, ubicacion=None):
+    pedido = {"nombre": "vacaciones.jpg", "tipo": "image/jpeg", **({"ubicacion": ubicacion} if ubicacion else {})}
+    status, subida = llamar("POST /subidas", pedido)
     assert status == 201
     key = subida["campos"]["key"]
     boto3.client("s3").put_object(Bucket="revela-test", Key=key, Body=imagen or jpeg())
@@ -257,3 +258,60 @@ def test_archivo_que_no_es_imagen_falla(aws):
     boto3.client("s3").put_object(Bucket="revela-test", Key=f"originales/{USUARIO}/x.jpg", Body=b"<script>")
     with pytest.raises(Exception):
         procesar.lambda_handler({"bucket": "revela-test", "key": f"originales/{USUARIO}/x.jpg"}, None)
+
+
+RIONEGRO = {"PricingBucket": "Advanced", "ResultItems": [{"PlaceId": "x", "PlaceType": "Street", "Title": "Calle 41",
+                             "Address": {"Label": "Calle 41, Rionegro, Antioquia, Colombia", "Locality": "Rionegro",
+                                         "Region": {"Code": "ANT", "Name": "Antioquia"},
+                                         "Country": {"Code2": "CO", "Code3": "COL", "Name": "Colombia"}}}]}
+
+
+@pytest.fixture
+def location(monkeypatch):
+    cliente = boto3.client("geo-places")
+    monkeypatch.setattr(guardar, "_lugares", cliente)
+    with Stubber(cliente) as s:
+        yield s
+
+
+def test_lugar_por_gps_de_la_foto(aws, traductor, location):
+    location.add_response("reverse_geocode", RIONEGRO, {"QueryPosition": [-75.567, 6.251], "MaxResults": 1,
+                                                        "Language": "es", "IntendedUse": "Storage"})
+    # El GPS de la foto manda sobre la ubicación del navegador
+    foto, _ = subir_y_analizar(traductor, ubicacion={"lat": 4.6, "lon": -74.1})
+    det = llamar("GET /fotos/{id}", foto=foto)[1]
+    assert det["lugar"] == {"nombre": "Rionegro, Antioquia, Colombia", "ciudad": "Rionegro", "region": "Antioquia", "pais": "Colombia"}
+    assert det["gps"] == {"lat": 6.251, "lon": -75.567} and det["gps_fuente"] == "foto"
+
+    for q in ("rionegro", "Antioquia", "colombia"):
+        assert [f["id"] for f in llamar("GET /fotos", params={"q": q})[1]["fotos"]] == [foto], q
+    assert llamar("GET /etiquetas")[1]["etiquetas"] == [{"etiqueta": "Perro", "fotos": 1}, {"etiqueta": "Playa", "fotos": 1}]
+
+    mapa = llamar("GET /lugares")[1]["fotos"]
+    assert [(f["id"], f["lat"], f["lon"], f["lugar"], f["aproximada"]) for f in mapa] == [
+        (foto, 6.251, -75.567, "Rionegro, Antioquia, Colombia", False)]
+    assert mapa[0]["miniatura"].startswith("https://")
+
+
+def test_ubicacion_del_navegador_si_la_foto_no_trae(aws, traductor, location):
+    location.add_response("reverse_geocode", RIONEGRO)
+    foto, _ = subir_y_analizar(traductor, imagen=jpeg(gps=False), ubicacion={"lat": 6.1446961, "lon": -75.3716})
+    det = llamar("GET /fotos/{id}", foto=foto)[1]
+    assert det["gps"] == {"lat": 6.144696, "lon": -75.3716} and det["gps_fuente"] == "subida"
+    assert llamar("GET /lugares")[1]["fotos"][0]["aproximada"] is True
+
+
+def test_sin_ubicacion_o_location_falla(aws, traductor, location):
+    foto, _ = subir_y_analizar(traductor, imagen=jpeg(gps=False))
+    assert llamar("GET /fotos/{id}", foto=foto)[1]["gps"] is None
+    assert llamar("GET /lugares")[1]["fotos"] == []
+
+    location.add_client_error("reverse_geocode", "ThrottlingException")
+    foto, resultado = subir_y_analizar(traductor)
+    det = llamar("GET /fotos/{id}", foto=foto)[1]
+    assert resultado["estado"] == "LISTA" and det["lugar"] is None and det["gps"] == {"lat": 6.251, "lon": -75.567}
+
+
+@pytest.mark.parametrize("ubicacion", [{"lat": "x", "lon": 1}, {"lat": 91, "lon": 0}, {"lat": 0, "lon": -181}, {"lat": 1}, "6,-75"])
+def test_ubicacion_invalida(aws, ubicacion):
+    assert llamar("POST /subidas", {"tipo": "image/jpeg", "ubicacion": ubicacion})[0] == 400

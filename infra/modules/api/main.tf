@@ -34,6 +34,14 @@ variable "client_id" {
   type = string
 }
 
+variable "mapa_key" {
+  type = string
+}
+
+variable "mapa_key_arn" {
+  type = string
+}
+
 variable "origenes" {
   type = list(string)
 }
@@ -72,6 +80,7 @@ resource "aws_iam_role_policy" "api" {
       # Las URLs prefirmadas valen con los permisos del rol que las firma
       { Effect = "Allow", Action = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"], Resource = "${var.bucket_arn}/originales/*" },
       { Effect = "Allow", Action = ["s3:GetObject", "s3:DeleteObject"], Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*"] },
+      { Effect = "Allow", Action = "geo:DescribeKey", Resource = var.mapa_key_arn },
     ]
   })
 }
@@ -96,6 +105,7 @@ resource "aws_lambda_function" "api" {
       TABLA       = var.tabla
       BUCKET      = var.bucket
       SUBIDAS_DIA = "50"
+      MAPA_KEY    = var.mapa_key
     }
   }
 
@@ -135,7 +145,7 @@ resource "aws_apigatewayv2_integration" "api" {
 }
 
 resource "aws_apigatewayv2_route" "rutas" {
-  for_each           = toset(["POST /subidas", "GET /fotos", "GET /fotos/{id}", "DELETE /fotos/{id}", "GET /etiquetas"])
+  for_each           = toset(["POST /subidas", "GET /fotos", "GET /fotos/{id}", "DELETE /fotos/{id}", "GET /etiquetas", "GET /lugares", "GET /mapa"])
   api_id             = aws_apigatewayv2_api.this.id
   route_key          = each.value
   target             = "integrations/${aws_apigatewayv2_integration.api.id}"

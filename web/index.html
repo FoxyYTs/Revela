@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.css">
 <script src="config.js"></script>
 <style>
   :root {
@@ -55,6 +56,21 @@
   .vacio h2 { font: 600 28px Fraunces, serif; color: var(--texto); margin: 0 0 8px; }
   .soltar { outline: 3px dashed var(--acento-2); outline-offset: -12px; }
   .mas { display: block; margin: 24px auto 0; }
+  .btn.activo { border-color: var(--acento-2); color: var(--acento-2); }
+  .ubicacion { display: flex; align-items: center; gap: 6px; font-size: 13px; color: var(--suave); cursor: pointer; }
+  .ubicacion input { accent-color: var(--acento); }
+
+  #vista-mapa { position: relative; height: calc(100vh - 140px); min-height: 360px; border-radius: var(--radio);
+                overflow: hidden; border: 1px solid var(--borde); }
+  #mapa { position: absolute; inset: 0; }
+  .mapa-aviso { position: absolute; inset: 0; display: grid; place-items: center; text-align: center; padding: 20px;
+                color: var(--suave); pointer-events: none; }
+  .marcador { width: 46px; height: 46px; border-radius: 50%; border: 3px solid var(--acento); padding: 0; overflow: hidden;
+              background: var(--panel); box-shadow: 0 4px 14px rgba(0,0,0,.5); cursor: pointer; }
+  .marcador.aproximada { border-style: dashed; border-color: var(--acento-2); }
+  .marcador img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .marcador:hover, .marcador:focus-visible { transform: scale(1.12); }
+  .maplibregl-ctrl-attrib { font-size: 10px; }
 
   .subidas { position: fixed; right: 16px; bottom: 16px; width: min(340px, calc(100vw - 32px)); z-index: 6;
              background: var(--panel); border: 1px solid var(--borde); border-radius: var(--radio); padding: 12px 14px; font-size: 13px; }
@@ -123,11 +139,16 @@
     <form class="buscar" id="form-buscar" role="search">
       <input id="q" type="search" placeholder="Buscar: perro, playa, cumpleaños, texto de un letrero…" aria-label="Buscar fotos">
     </form>
+    <button class="btn" id="btn-mapa" aria-pressed="false">🗺️ Mapa</button>
+    <label class="ubicacion" title="Si la foto no trae GPS (los celulares lo borran al compartir), se guarda dónde estabas al subirla">
+      <input type="checkbox" id="usar-ubicacion"> Mi ubicación
+    </label>
     <button class="btn primario" id="btn-subir">Subir fotos</button>
     <button class="btn" id="btn-salir">Salir</button>
     <input id="archivos" type="file" accept="image/jpeg,image/png" multiple hidden>
   </header>
   <main id="zona">
+    <div id="vista-galeria">
     <div class="chips" id="chips"></div>
     <p class="estado-busqueda oculto" id="estado-busqueda"></p>
     <div class="grilla" id="grilla"></div>
@@ -136,6 +157,11 @@
       <p>Arrastra fotos aquí o usa <b>Subir fotos</b>. Revela las etiqueta, lee su texto y las ordena por fecha.</p>
     </div>
     <button class="btn mas oculto" id="btn-mas">Cargar más</button>
+    </div>
+    <div id="vista-mapa" class="oculto">
+      <div id="mapa" role="region" aria-label="Mapa de tus fotos"></div>
+      <p class="mapa-aviso oculto" id="mapa-aviso"></p>
+    </div>
   </main>
   <div class="subidas oculto" id="subidas" aria-live="polite"></div>
 </div>
@@ -333,6 +359,7 @@ async function cargarEtiquetas() {
 const normal = (t) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
 
 function buscar(q) {
+  if (!$("#vista-mapa").classList.contains("oculto")) verMapa(false);
   $("#q").value = q;
   estado.q = q.trim();
   cargar();
@@ -386,8 +413,10 @@ async function abrir(id) {
     ["Tomada", f.fecha_toma ? fmtFecha(f.fecha_toma) : "Sin fecha en la foto"],
     ["Cámara", f.camara || "—"],
     ["Tamaño", f.ancho ? `${f.ancho} × ${f.alto} px` : "—"],
-    ["Lugar", f.gps ? h("a", { href: `https://www.openstreetmap.org/?mlat=${f.gps.lat}&mlon=${f.gps.lon}#map=15/${f.gps.lat}/${f.gps.lon}`,
-                              target: "_blank", rel: "noopener", textContent: `${f.gps.lat}, ${f.gps.lon}` }) : "Sin GPS"],
+    ["Lugar", f.gps ? [f.lugar?.nombre || `${f.gps.lat}, ${f.gps.lon}`,
+                       f.gps_fuente === "subida" ? h("small", { textContent: " (ubicación al subir)", style: "color:var(--suave)" }) : null,
+                       h("br"), h("a", { href: "#", textContent: "Ver en el mapa", onclick: (e) => { e.preventDefault(); $("#dialogo").close(); verMapa(true, f.id); } })]
+                    : "Sin ubicación"],
     ["Estado", { LISTA: "Lista", PROCESANDO: "Revelando…", CUARENTENA: `En cuarentena (${(f.moderacion || []).join(", ")})`, ERROR: "Error al analizar" }[f.estado]],
   ];
   $("#d-datos").replaceChildren(...filas.flatMap(([k, v]) => [h("dt", { textContent: k }), h("dd", { style: "margin:0" }, v)]));
@@ -408,6 +437,82 @@ async function abrir(id) {
 
 $("#d-cerrar").onclick = () => $("#dialogo").close();
 $("#dialogo").onclick = (e) => { if (e.target === $("#dialogo")) $("#dialogo").close(); };
+
+// ---------- Ubicación al subir ----------
+
+// Se recuerda la preferencia en este navegador; por defecto activada
+const casilla = $("#usar-ubicacion");
+try { casilla.checked = localStorage.getItem("revela.ubicacion") !== "no"; } catch { casilla.checked = true; }
+casilla.onchange = () => { try { localStorage.setItem("revela.ubicacion", casilla.checked ? "si" : "no"); } catch {} };
+
+function miUbicacion() {
+  if (!casilla.checked || !navigator.geolocation) return Promise.resolve(null);
+  return new Promise((listo) => navigator.geolocation.getCurrentPosition(
+    (p) => listo({ lat: p.coords.latitude, lon: p.coords.longitude }),
+    () => listo(null), // sin permiso o sin señal: la foto sube igual
+    { timeout: 8000, maximumAge: 300000 }));
+}
+
+// ---------- Mapa (Amazon Location + MapLibre) ----------
+
+const mapaEstado = { mapa: null, marcadores: [], cargando: null };
+
+function cargarScript(src) {
+  return new Promise((ok, falla) => document.head.append(h("script", { src, onload: ok, onerror: falla })));
+}
+
+async function prepararMapa() {
+  if (mapaEstado.mapa) return mapaEstado.mapa;
+  const [{ apiKey, region }] = await Promise.all([
+    api("GET", "/mapa"),
+    window.maplibregl ? null : cargarScript("https://cdnjs.cloudflare.com/ajax/libs/maplibre-gl/4.7.1/maplibre-gl.js"),
+  ]);
+  const mapa = new maplibregl.Map({
+    container: "mapa",
+    style: `https://maps.geo.${region}.amazonaws.com/v2/styles/Standard/descriptor?key=${encodeURIComponent(apiKey)}&color-scheme=Dark`,
+    center: [-75.5, 6.2], zoom: 5,
+  });
+  mapa.addControl(new maplibregl.NavigationControl({ showCompass: false }), "top-right");
+  await new Promise((ok) => mapa.once("load", ok));
+  return (mapaEstado.mapa = mapa);
+}
+
+async function verMapa(mostrar, enfocar) {
+  $("#btn-mapa").classList.toggle("activo", mostrar);
+  $("#btn-mapa").setAttribute("aria-pressed", String(mostrar));
+  $("#vista-galeria").classList.toggle("oculto", mostrar);
+  $("#vista-mapa").classList.toggle("oculto", !mostrar);
+  if (!mostrar) return;
+
+  const aviso = $("#mapa-aviso");
+  try {
+    const [mapa, { fotos }] = await Promise.all([prepararMapa(), api("GET", "/lugares")]);
+    mapa.resize();
+    mapaEstado.marcadores.forEach((m) => m.remove());
+    mapaEstado.marcadores = fotos.map((f) => new maplibregl.Marker({
+      element: h("button", { className: "marcador" + (f.aproximada ? " aproximada" : ""), onclick: () => abrir(f.id),
+                             title: [f.lugar, f.descripcion].filter(Boolean).join(" — "),
+                             ariaLabel: `Foto en ${f.lugar || "este lugar"}` },
+                 h("img", { src: f.miniatura, alt: "" })),
+    }).setLngLat([f.lon, f.lat]).addTo(mapa));
+
+    aviso.classList.toggle("oculto", fotos.length > 0);
+    aviso.textContent = "Aún no hay fotos con ubicación. Activa “Mi ubicación” antes de subir, o sube fotos con GPS.";
+    const foco = fotos.find((f) => f.id === enfocar);
+    if (foco) mapa.flyTo({ center: [foco.lon, foco.lat], zoom: 15 });
+    else if (fotos.length) {
+      const limites = new maplibregl.LngLatBounds();
+      fotos.forEach((f) => limites.extend([f.lon, f.lat]));
+      mapa.fitBounds(limites, { padding: 70, maxZoom: 15, duration: 600 });
+    }
+  } catch (e) {
+    if (e.message === "sesión cerrada") return;
+    aviso.classList.remove("oculto");
+    aviso.textContent = `No se pudo cargar el mapa: ${e.message}`;
+  }
+}
+
+$("#btn-mapa").onclick = () => verMapa($("#vista-mapa").classList.contains("oculto"));
 
 // ---------- Subidas: URL prefirmada → POST directo a S3 ----------
 
@@ -435,6 +540,8 @@ async function subir(archivos) {
     return estadoFila;
   });
 
+  const ubicacion = await miUbicacion();
+
   // De a 3 a la vez: no satura la red del celular durante la demo
   let i = 0;
   const trabajador = async () => {
@@ -444,7 +551,7 @@ async function subir(archivos) {
         if (!["image/jpeg", "image/png"].includes(a.type)) throw new Error("solo JPG o PNG");
         if (a.size > MAX_BYTES) throw new Error("pesa más de 15 MB");
         fila.textContent = "Subiendo…";
-        const { url, campos } = await api("POST", "/subidas", { nombre: a.name, tipo: a.type });
+        const { url, campos } = await api("POST", "/subidas", { nombre: a.name, tipo: a.type, ...(ubicacion ? { ubicacion } : {}) });
         const form = new FormData();
         Object.entries(campos).forEach(([k, v]) => form.append(k, v));
         form.append("file", a); // el archivo debe ir al final del formulario

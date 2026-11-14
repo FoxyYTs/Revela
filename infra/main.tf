@@ -36,17 +36,19 @@ module "pipeline" {
 }
 
 module "api" {
-  source     = "./modules/api"
-  prefijo    = local.prefijo
-  bucket     = module.datos.bucket
-  bucket_arn = module.datos.bucket_arn
-  tabla      = module.datos.tabla
-  tabla_arn  = module.datos.tabla_arn
-  zip        = data.archive_file.lambdas.output_path
-  zip_hash   = data.archive_file.lambdas.output_base64sha256
-  issuer     = module.auth.issuer
-  client_id  = module.auth.client_id
-  origenes   = local.origenes
+  source       = "./modules/api"
+  prefijo      = local.prefijo
+  bucket       = module.datos.bucket
+  bucket_arn   = module.datos.bucket_arn
+  tabla        = module.datos.tabla
+  tabla_arn    = module.datos.tabla_arn
+  zip          = data.archive_file.lambdas.output_path
+  zip_hash     = data.archive_file.lambdas.output_base64sha256
+  issuer       = module.auth.issuer
+  client_id    = module.auth.client_id
+  origenes     = local.origenes
+  mapa_key     = module.web.mapa_key
+  mapa_key_arn = module.web.mapa_key_arn
 }
 
 module "web" {

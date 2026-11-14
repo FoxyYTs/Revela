@@ -102,6 +102,45 @@ resource "aws_s3_bucket_policy" "web" {
   depends_on = [aws_s3_bucket_public_access_block.web]
 }
 
+# API key de Amazon Location para los mosaicos del mapa. El provider de AWS no tiene recurso para las keys v2,
+# así que va en un stack de CloudFormation: Terraform igual la crea y la destruye
+resource "aws_cloudformation_stack" "mapa" {
+  name = "${var.prefijo}-mapa"
+  template_body = jsonencode({
+    Resources = {
+      Clave = {
+        Type = "AWS::Location::APIKey"
+        Properties = {
+          KeyName     = "${var.prefijo}-mapa"
+          Description = "Mosaicos del mapa de Revela; solo desde la web"
+          NoExpiry    = true
+          ForceUpdate = true
+          ForceDelete = true
+          Restrictions = {
+            AllowActions   = ["geo-maps:GetTile", "geo-maps:GetStaticMap"]
+            AllowResources = ["arn:aws:geo-maps:${data.aws_region.actual.region}::provider/default"]
+            # La key viaja al navegador: estos orígenes son lo único que impide usarla desde otro sitio
+            AllowReferers = ["https://${aws_cloudfront_distribution.web.domain_name}/*", "http://localhost:8000/*"]
+          }
+        }
+      }
+    }
+    Outputs = {
+      Arn = { Value = { "Fn::GetAtt" = ["Clave", "Arn"] } }
+    }
+  })
+}
+
+data "aws_region" "actual" {}
+
+output "mapa_key" {
+  value = "${var.prefijo}-mapa"
+}
+
+output "mapa_key_arn" {
+  value = aws_cloudformation_stack.mapa.outputs["Arn"]
+}
+
 output "dominio" {
   value = aws_cloudfront_distribution.web.domain_name
 }
