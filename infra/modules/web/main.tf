@@ -7,6 +7,11 @@ variable "html" {
   type        = string
 }
 
+variable "bucket_fotos" {
+  description = "Bucket de donde el navegador carga las fotos (URLs prefirmadas) y al que sube"
+  type        = string
+}
+
 variable "config" {
   description = "Valores que la página recibe en config.js (URL de la API, Cognito)"
   type        = map(string)
@@ -38,6 +43,14 @@ resource "aws_s3_object" "index" {
   content_type = "text/html; charset=utf-8"
 }
 
+resource "aws_s3_object" "app" {
+  bucket       = aws_s3_bucket.web.id
+  key          = "app.js"
+  source       = "${dirname(var.html)}/app.js"
+  etag         = filemd5("${dirname(var.html)}/app.js")
+  content_type = "application/javascript; charset=utf-8"
+}
+
 resource "aws_s3_object" "config" {
   bucket       = aws_s3_bucket.web.id
   key          = "config.js"
@@ -50,6 +63,58 @@ resource "aws_cloudfront_origin_access_control" "web" {
   origin_access_control_origin_type = "s3"
   signing_behavior                  = "always"
   signing_protocol                  = "sigv4"
+}
+
+locals {
+  s3_fotos = "https://${var.bucket_fotos}.s3.amazonaws.com https://${var.bucket_fotos}.s3.us-east-1.amazonaws.com"
+  # Solo se ejecuta código de la propia web y de cdnjs (MapLibre, con SRI); la página guarda tokens de sesión
+  csp = join("; ", [
+    "default-src 'self'",
+    "script-src 'self' https://cdnjs.cloudflare.com",
+    "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com",
+    "font-src https://fonts.gstatic.com",
+    "img-src 'self' data: blob: ${local.s3_fotos}",
+    "connect-src 'self' https://*.execute-api.us-east-1.amazonaws.com https://cognito-idp.us-east-1.amazonaws.com https://maps.geo.us-east-1.amazonaws.com ${local.s3_fotos}",
+    "worker-src blob:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "form-action 'none'",
+    "frame-ancestors 'none'",
+  ])
+}
+
+# Las mismas cabeceras de Managed-SecurityHeadersPolicy más la CSP
+resource "aws_cloudfront_response_headers_policy" "web" {
+  name = "${var.prefijo}-web"
+
+  security_headers_config {
+    content_security_policy {
+      content_security_policy = local.csp
+      override                = true
+    }
+    content_type_options {
+      override = true
+    }
+    frame_options {
+      frame_option = "DENY"
+      override     = true
+    }
+    # strict-origin-when-cross-origin manda el dominio como Referer: la API key del mapa depende de eso
+    referrer_policy {
+      referrer_policy = "strict-origin-when-cross-origin"
+      override        = true
+    }
+    strict_transport_security {
+      access_control_max_age_sec = 31536000
+      include_subdomains         = true
+      override                   = true
+    }
+    xss_protection {
+      mode_block = true
+      protection = true
+      override   = true
+    }
+  }
 }
 
 resource "aws_cloudfront_distribution" "web" {
@@ -72,7 +137,7 @@ resource "aws_cloudfront_distribution" "web" {
     compress               = true
     # shortcut: sin caché (Managed-CachingDisabled) para no invalidar en cada cambio; pasar a CachingOptimized al cerrar la página
     cache_policy_id            = "4135ea2d-6df8-44a3-9df3-4b5a84be39ad"
-    response_headers_policy_id = "67f7725c-6f97-4210-82d7-5512b31e9d03" # Managed-SecurityHeadersPolicy
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.web.id
   }
 
   restrictions {
@@ -143,6 +208,10 @@ output "mapa_key_arn" {
 
 output "dominio" {
   value = aws_cloudfront_distribution.web.domain_name
+}
+
+output "csp" {
+  value = local.csp
 }
 
 output "config_js" {

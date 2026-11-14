@@ -52,9 +52,10 @@ module "api" {
 }
 
 module "web" {
-  source  = "./modules/web"
-  prefijo = local.prefijo
-  html    = "${path.module}/../web/index.html"
+  source       = "./modules/web"
+  prefijo      = local.prefijo
+  html         = "${path.module}/../web/index.html"
+  bucket_fotos = module.datos.bucket
   config = {
     api      = module.api.url
     region   = "us-east-1"

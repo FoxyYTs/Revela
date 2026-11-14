@@ -38,6 +38,8 @@ SUBIDAS_DIA = int(os.environ.get("SUBIDAS_DIA", "50"))
 COLOMBIA = timezone(timedelta(hours=-5))
 MAPA_KEY = os.environ.get("MAPA_KEY", "jadg-revela-mapa")
 MAX_LUGARES = 500
+# Una foto que sigue en PROCESANDO después de esto se abandonó (la subida a S3 falló) o el análisis se trabó
+ESPERA_ANALISIS = timedelta(minutes=10)
 
 dynamo = boto3.resource("dynamodb")
 tabla = dynamo.Table(TABLA)
@@ -66,8 +68,18 @@ def firmar(key):
     return s3.generate_presigned_url("get_object", Params={"Bucket": BUCKET, "Key": key}, ExpiresIn=VIGENCIA_URL)
 
 
+def estado_visible(item):
+    """El estado que ve el usuario; None si es una subida que nunca llegó (se oculta hasta que el TTL la borre)."""
+    if item["estado"] != "PROCESANDO":
+        return item["estado"]
+    subida = datetime.fromisoformat(item["fecha_subida"]).replace(tzinfo=timezone.utc)
+    if datetime.now(timezone.utc) - subida < ESPERA_ANALISIS:
+        return "PROCESANDO"
+    return "ERROR" if item.get("analisis") else None
+
+
 def resumen(item):
-    foto = {"id": item["SK"][2:], "nombre": item.get("nombre"), "estado": item["estado"],
+    foto = {"id": item["SK"][2:], "nombre": item.get("nombre"), "estado": estado_visible(item),
             "fecha": item["fecha_orden"].split("#")[0], "etiquetas": item.get("etiquetas", [])[:5],
             "descripcion": item.get("descripcion")}
     # Las fotos en cuarentena nunca salen con URL
@@ -83,7 +95,7 @@ def leer_ubicacion(valor):
     try:
         lat, lon = float(valor["lat"]), float(valor["lon"])
     except (KeyError, TypeError, ValueError):
-        raise ErrorCliente(400, "Ubicación inválida")
+        raise ErrorCliente(400, "Ubicación inválida") from None
     if not (-90 <= lat <= 90 and -180 <= lon <= 180):
         raise ErrorCliente(400, "Ubicación inválida")
     return {"lat": Decimal(str(round(lat, 6))), "lon": Decimal(str(round(lon, 6)))}
@@ -101,7 +113,7 @@ def descontar_cupo(usuario):
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
-        raise ErrorCliente(429, f"Llegaste al límite de {SUBIDAS_DIA} fotos por día; mañana puedes subir más")
+        raise ErrorCliente(429, f"Llegaste al límite de {SUBIDAS_DIA} fotos por día; mañana puedes subir más") from None
 
 
 def crear_subida(usuario, cuerpo):
@@ -142,12 +154,12 @@ def listar(usuario, params):
         try:
             consulta["ExclusiveStartKey"] = json.loads(base64.urlsafe_b64decode(params["siguiente"]))
         except ValueError:
-            raise ErrorCliente(400, "Cursor inválido")
+            raise ErrorCliente(400, "Cursor inválido") from None
         if consulta["ExclusiveStartKey"].get("PK") != pk:
-            raise ErrorCliente(400, "Cursor inválido")
+            raise ErrorCliente(400, "Cursor inválido") from None
     r = tabla.query(**consulta)
     siguiente = r.get("LastEvaluatedKey")
-    return 200, {"fotos": [resumen(i) for i in r["Items"]],
+    return 200, {"fotos": [f for f in map(resumen, r["Items"]) if f["estado"]],
                  "siguiente": base64.urlsafe_b64encode(json.dumps(siguiente).encode()).decode() if siguiente else None}
 
 
@@ -161,9 +173,12 @@ def buscar(pk, q):
     ids = ids[:100]
     if not ids:
         return []
-    r = dynamo.batch_get_item(
-        RequestItems={TABLA: {"Keys": [{"PK": pk, "SK": f"F#{i}"} for i in ids]}})
-    fotos = [resumen(i) for i in r["Responses"][TABLA]]
+    items, pedido = [], {TABLA: {"Keys": [{"PK": pk, "SK": f"F#{i}"} for i in ids]}}
+    while pedido:  # DynamoDB puede devolver parte de las llaves sin leer si hay mucha carga
+        r = dynamo.batch_get_item(RequestItems=pedido)
+        items += r["Responses"][TABLA]
+        pedido = r.get("UnprocessedKeys")
+    fotos = [resumen(i) for i in items]
     return sorted(fotos, key=lambda f: f["fecha"], reverse=True)
 
 
@@ -247,7 +262,7 @@ def lambda_handler(event, _context):
             try:
                 cuerpo = json.loads(cuerpo)
             except ValueError:
-                raise ErrorCliente(400, "JSON inválido")
+                raise ErrorCliente(400, "JSON inválido") from None
             return responder(*crear_subida(usuario, cuerpo))
         if ruta == "GET /fotos":
             return responder(*listar(usuario, params))

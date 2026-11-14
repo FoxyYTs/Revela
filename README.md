@@ -21,7 +21,7 @@ Web: S3 privado ◄── CloudFront + OAC          Mapa: MapLibre + mosaicos de
 | Carpeta | Contenido |
 |---|---|
 | `lambdas/` | `api.py`, `procesar.py`, `guardar.py` y `test_flujo.py` (moto) |
-| `web/index.html` | Página sin build; recibe la configuración en `config.js` |
+| `web/` | `index.html` + `app.js`, sin build; la configuración llega en `config.js` (la escribe Terraform) |
 | `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web` (49 recursos) |
 | `scripts/capa_pillow.sh` | Construye la capa de Pillow; Terraform la llama solo |
 
@@ -62,6 +62,10 @@ Destruir: `terraform destroy` (los buckets tienen `force_destroy`).
 - Cada foto se analiza una sola vez (paso `Reclamar`, escritura condicional en DynamoDB) y `procesar` copia a `fotos/`
   los bytes que leyó: Rekognition y la app usan esa copia, así que reusar la URL de subida no repite el gasto
   ni permite sobrescribir una foto ya moderada.
+- CloudFront manda una CSP: solo corre código de la propia web y de cdnjs (MapLibre con SRI), y la página solo
+  habla con la API, Cognito, S3 y Amazon Location. Por eso el JavaScript va en `app.js` y no en línea.
+- Una subida que falla en S3 se borra desde la página; si aun así queda una foto en PROCESANDO más de 10 minutos,
+  la API la oculta (o la muestra como error si el análisis alcanzó a empezar) hasta que el TTL la borre.
 - Las fotos en cuarentena nunca salen con URL; las miniaturas no llevan EXIF (no exponen el GPS).
 - La API limita a 10 peticiones/s (ráfaga 20) en total y cada usuario puede pedir 50 subidas por día (`SUBIDAS_DIA`,
   contador atómico en DynamoDB) para acotar el gasto en Rekognition y Nova.

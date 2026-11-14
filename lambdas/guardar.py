@@ -162,7 +162,7 @@ def lambda_handler(event, _context):
 
     claves = {}
     if estado == "LISTA":
-        for es, en in zip(nombres_es, nombres_en):
+        for es, en in zip(nombres_es, nombres_en, strict=True):
             for nombre in (es, en):
                 claves.setdefault(f"E#{normalizar(nombre)}#{fecha_orden}", es)
         for p in palabras(textos):

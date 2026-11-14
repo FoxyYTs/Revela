@@ -6,7 +6,7 @@ import json
 import boto3
 import pytest
 from botocore.stub import Stubber
-from PIL import ExifTags, Image
+from PIL import ExifTags, Image, UnidentifiedImageError
 
 import api
 import guardar
@@ -256,7 +256,7 @@ def test_entradas_invalidas(aws, ruta, foto, cuerpo, status):
 
 def test_archivo_que_no_es_imagen_falla(aws):
     boto3.client("s3").put_object(Bucket="revela-test", Key=f"originales/{USUARIO}/x.jpg", Body=b"<script>")
-    with pytest.raises(Exception):
+    with pytest.raises(UnidentifiedImageError):
         procesar.lambda_handler({"bucket": "revela-test", "key": f"originales/{USUARIO}/x.jpg"}, None)
 
 
@@ -315,3 +315,17 @@ def test_sin_ubicacion_o_location_falla(aws, traductor, location):
 @pytest.mark.parametrize("ubicacion", [{"lat": "x", "lon": 1}, {"lat": 91, "lon": 0}, {"lat": 0, "lon": -181}, {"lat": 1}, "6,-75"])
 def test_ubicacion_invalida(aws, ubicacion):
     assert llamar("POST /subidas", {"tipo": "image/jpeg", "ubicacion": ubicacion})[0] == 400
+
+
+def test_subida_abandonada_se_oculta_y_analisis_trabado_es_error(aws, monkeypatch):
+    _, abandonada = llamar("POST /subidas", {"tipo": "image/jpeg"})
+    _, trabada = llamar("POST /subidas", {"tipo": "image/jpeg"})
+    tabla = boto3.resource("dynamodb").Table("revela-test")
+    tabla.update_item(Key={"PK": f"U#{USUARIO}", "SK": f"F#{trabada['foto']}"}, UpdateExpression="SET analisis = :a",
+                      ExpressionAttributeValues={":a": "2026-01-01T00:00:00Z"})
+    assert {f["estado"] for f in llamar("GET /fotos")[1]["fotos"]} == {"PROCESANDO"}
+
+    monkeypatch.setattr(api, "ESPERA_ANALISIS", api.timedelta(seconds=-1))  # como si hubieran pasado 10 minutos
+    assert [(f["id"], f["estado"]) for f in llamar("GET /fotos")[1]["fotos"]] == [(trabada["foto"], "ERROR")]
+    assert llamar("GET /fotos/{id}", foto=abandonada["foto"])[1]["estado"] is None  # el detalle no se rompe
+    assert llamar("DELETE /fotos/{id}", foto=abandonada["foto"])[0] == 204  # la página la borra si S3 falla
