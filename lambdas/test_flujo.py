@@ -31,6 +31,11 @@ def jpeg(ancho=1200, alto=800, gps=True):
     return salida.getvalue()
 
 
+def nova(etiquetas, descripcion="Un perro corre por la playa.", cerca=False):
+    texto = json.dumps({"descripcion": descripcion, "etiquetas": etiquetas}, ensure_ascii=False)
+    return f"```json\n{texto}\n```" if cerca else texto
+
+
 def respuesta_nova(texto):
     return {"output": {"message": {"role": "assistant", "content": [{"text": texto}]}}, "stopReason": "end_turn",
             "usage": {"inputTokens": 80, "outputTokens": 10, "totalTokens": 90}, "metrics": {"latencyMs": 300}}
@@ -49,14 +54,13 @@ def traductor():
         yield s
 
 
-def subir_y_analizar(traductor, etiquetas=PERRO, textos=None, moderacion=None, traduccion='["Perro", "Playa"]', imagen=None):
+def subir_y_analizar(traductor, etiquetas=PERRO, textos=None, moderacion=None, traduccion=None, imagen=None):
     status, subida = llamar("POST /subidas", {"nombre": "vacaciones.jpg", "tipo": "image/jpeg"})
     assert status == 201
     key = subida["campos"]["key"]
     boto3.client("s3").put_object(Bucket="revela-test", Key=key, Body=imagen or jpeg())
 
-    if etiquetas:
-        traductor.add_response("converse", respuesta_nova(traduccion))
+    traductor.add_response("converse", respuesta_nova(traduccion or nova(["Perro", "Playa"])))
     imagen = procesar.lambda_handler({"bucket": "revela-test", "key": key}, None)
     resultado = guardar.lambda_handler({"bucket": "revela-test", "key": imagen["revisada"], "etiquetas": etiquetas,
                                         "textos": textos, "moderacion": moderacion, "imagen": imagen}, None)
@@ -80,7 +84,7 @@ def test_subida_prefirmada_restringe_tipo_y_tamano(aws):
 
 
 def test_flujo_completo(aws, traductor):
-    foto, resultado = subir_y_analizar(traductor, textos=["FELIZ NAVIDAD", "Café"], traduccion='["PERRO", "pLaya"]')
+    foto, resultado = subir_y_analizar(traductor, textos=["FELIZ NAVIDAD", "Café"], traduccion=nova(["PERRO", "pLaya"]))
     assert resultado == {"foto": foto, "estado": "LISTA"}
 
     status, det = llamar("GET /fotos/{id}", foto=foto)
@@ -91,6 +95,7 @@ def test_flujo_completo(aws, traductor):
     assert det["gps"] == {"lat": 6.251, "lon": -75.567}
     assert (det["ancho"], det["alto"]) == (800, 1200)  # aplicó la orientación EXIF
     assert det["texto"] == "FELIZ NAVIDAD\nCafé"
+    assert det["descripcion"] == "Un perro corre por la playa."
     assert det["original"].startswith("https://") and det["miniatura"].startswith("https://")
 
     miniatura = boto3.client("s3").get_object(Bucket="revela-test", Key=f"miniaturas/{USUARIO}/{foto}.jpg")["Body"].read()
@@ -151,6 +156,7 @@ def test_cuarentena_no_indexa_ni_entrega_urls(aws, traductor):
     assert resultado["estado"] == "CUARENTENA"
     det = llamar("GET /fotos/{id}", foto=foto)[1]
     assert det["moderacion"] == ["Graphic Violence"]
+    assert det["descripcion"] is None and det["etiquetas"] == ["Dog", "Beach"]  # a Nova no se le muestra
     assert "original" not in det and "miniatura" not in det
     assert llamar("GET /fotos", params={"q": "perro"})[1]["fotos"] == []
 
@@ -161,9 +167,21 @@ def test_traje_de_bano_o_confianza_baja_no_bloquean(aws, traductor):
     assert subir_y_analizar(traductor, moderacion=moderacion)[1]["estado"] == "LISTA"
 
 
+def test_nova_recibe_la_miniatura_y_su_respuesta_se_limita(aws, traductor):
+    pedidos = []
+    guardar.bedrock.meta.events.register("before-parameter-build.bedrock-runtime.Converse",
+                                         lambda params, **_: pedidos.append(params))
+    foto, _ = subir_y_analizar(traductor, traduccion=nova(["Perro", "Playa"], descripcion="x" * 1000), textos=["HOLA"])
+    contenido = pedidos[-1]["messages"][0]["content"]
+    assert contenido[0]["image"]["format"] == "jpeg"
+    assert Image.open(io.BytesIO(contenido[0]["image"]["source"]["bytes"])).size == (320, 480)  # la miniatura
+    assert "Dog" in contenido[1]["text"] and "HOLA" in contenido[1]["text"]
+    assert len(llamar("GET /fotos/{id}", foto=foto)[1]["descripcion"]) == guardar.MAX_DESCRIPCION
+
+
 def test_un_solo_elemento_y_sin_etiquetas(aws, traductor):
     # JSONata entrega un escalar con un solo resultado y nada sin resultados
-    foto, _ = subir_y_analizar(traductor, etiquetas={"Name": "Dog", "Confidence": 99.0}, textos="HOLA", traduccion='["Perro"]')
+    foto, _ = subir_y_analizar(traductor, etiquetas={"Name": "Dog", "Confidence": 99.0}, textos="HOLA", traduccion=nova(["Perro"]))
     det = llamar("GET /fotos/{id}", foto=foto)[1]
     assert det["etiquetas"] == ["Perro"] and det["texto"] == "HOLA"
 
@@ -186,7 +204,7 @@ def test_reprocesar_reemplaza_indices(aws, traductor):
     key = subida["campos"]["key"]
     boto3.client("s3").put_object(Bucket="revela-test", Key=key, Body=jpeg())
     imagen = procesar.lambda_handler({"bucket": "revela-test", "key": key}, None)
-    for etiquetas, traduccion in ((PERRO, '```json\n["Perro", "Playa"]\n```'), ([{"Name": "Cat", "Confidence": 90.0}], '["Gato"]')):
+    for etiquetas, traduccion in ((PERRO, nova(["Perro", "Playa"], cerca=True)), ([{"Name": "Cat", "Confidence": 90.0}], nova(["Gato"]))):
         traductor.add_response("converse", respuesta_nova(traduccion))
         guardar.lambda_handler({"bucket": "revela-test", "key": imagen["revisada"], "etiquetas": etiquetas, "imagen": imagen}, None)
     assert llamar("GET /fotos", params={"q": "perro"})[1]["fotos"] == []

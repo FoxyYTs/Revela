@@ -13,7 +13,7 @@ Navegador ──Cognito (login)──► API Gateway HTTP (JWT) ──► Lambda
                                                                              ├─ Rekognition DetectLabels
                                                                              ├─ Rekognition DetectText
                                                                              └─ Rekognition DetectModerationLabels
-                                                                          4. Lambda guardar (Nova Micro traduce) ──► DynamoDB
+                                                                          4. Lambda guardar (Nova Lite: pie de foto + traducción) ──► DynamoDB
 Web: S3 privado ◄── CloudFront + OAC
 ```
 
@@ -49,7 +49,9 @@ Destruir: `terraform destroy` (los buckets tienen `force_destroy`).
 
 ## Notas
 
-- Amazon Translate no está habilitado en la cuenta → las etiquetas se traducen con Nova Micro; si falla, quedan en inglés.
+- Nova Lite mira la miniatura (480 px) y en una sola llamada escribe el pie de foto y traduce las etiquetas
+  (Amazon Translate no está habilitado en la cuenta). Si falla, la foto queda sin pie y con etiquetas en inglés.
+  Las fotos en cuarentena no se le envían.
 - Concurrencia de Lambda de la cuenta = 10 compartida: Step Functions reintenta con espera si se llena.
 - Cada foto se analiza una sola vez (paso `Reclamar`, escritura condicional en DynamoDB) y `procesar` copia a `fotos/`
   los bytes que leyó: Rekognition y la app usan esa copia, así que reusar la URL de subida no repite el gasto

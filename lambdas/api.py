@@ -62,7 +62,8 @@ def firmar(key):
 
 def resumen(item):
     foto = {"id": item["SK"][2:], "nombre": item.get("nombre"), "estado": item["estado"],
-            "fecha": item["fecha_orden"].split("#")[0], "etiquetas": item.get("etiquetas", [])[:5]}
+            "fecha": item["fecha_orden"].split("#")[0], "etiquetas": item.get("etiquetas", [])[:5],
+            "descripcion": item.get("descripcion")}
     # Las fotos en cuarentena nunca salen con URL
     if item["estado"] == "LISTA":
         foto["miniatura"] = firmar(item["miniatura"])
@@ -153,7 +154,7 @@ def obtener(usuario, foto):
 def detalle(usuario, foto):
     item = obtener(usuario, foto)
     datos = resumen(item)
-    datos.update({k: item.get(k) for k in ("etiquetas", "texto", "camara", "gps", "ancho", "alto", "fecha_toma", "moderacion")})
+    datos.update({k: item.get(k) for k in ("etiquetas", "texto", "descripcion", "camara", "gps", "ancho", "alto", "fecha_toma", "moderacion")})
     if item["estado"] == "LISTA":
         datos["original"] = firmar(item.get("revisada", item["original"]))  # las de antes de fotos/ no tienen copia
     return 200, datos

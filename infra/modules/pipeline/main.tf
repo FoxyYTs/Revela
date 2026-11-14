@@ -144,8 +144,8 @@ resource "aws_lambda_function" "procesar" {
 data "aws_caller_identity" "actual" {}
 
 locals {
-  # Nova Micro por inference profile "us.": hay que permitir el profile y el modelo en cada región a la que enruta
-  modelo = "amazon.nova-micro-v1:0"
+  # Nova Lite (ve imágenes) por inference profile "us.": hay que permitir el profile y el modelo en cada región a la que enruta
+  modelo = "amazon.nova-lite-v1:0"
 }
 
 resource "aws_iam_role" "guardar" {
@@ -166,6 +166,7 @@ resource "aws_iam_role_policy" "guardar" {
     Statement = [
       { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:BatchWriteItem"], Resource = var.tabla_arn },
       { Effect = "Allow", Action = "s3:DeleteObject", Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*"] },
+      { Effect = "Allow", Action = "s3:GetObject", Resource = "${var.bucket_arn}/miniaturas/*" }, # Nova describe la miniatura
       {
         Effect = "Allow"
         Action = "bedrock:InvokeModel"

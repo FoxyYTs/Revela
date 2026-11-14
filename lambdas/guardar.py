@@ -28,11 +28,16 @@ UMBRAL_MODERACION = float(os.environ.get("UMBRAL_MODERACION", "80"))
 BLOQUEAR = {"Explicit", "Non-Explicit Nudity of Intimate parts and Kissing", "Violence", "Visually Disturbing", "Hate Symbols"}
 MAX_PALABRAS = 30
 
-MODELO = os.environ.get("MODELO", "us.amazon.nova-micro-v1:0")
-INSTRUCCION = ("Traduces etiquetas de fotos del inglés al español de Colombia. Recibes un arreglo JSON y respondes SOLO "
-               "otro arreglo JSON con la traducción de cada etiqueta, en el mismo orden y con la misma cantidad. "
-               "Usa sustantivos cortos con espacios normales, sin explicaciones. "
-               'Ejemplo: ["Sunglasses", "Mobile Phone", "Coat"] → ["Gafas de sol", "Teléfono móvil", "Abrigo"]')
+MODELO = os.environ.get("MODELO", "us.amazon.nova-lite-v1:0")
+INSTRUCCION = (
+    "Describes fotos de una galería personal en español de Colombia. Recibes la foto, sus etiquetas en inglés "
+    "(arreglo JSON) y el texto que aparece en ella. Respondes SOLO un objeto JSON con dos campos:\n"
+    '"descripcion": una o dos frases naturales sobre lo que se ve (máximo 220 caracteres), sin inventar nombres de '
+    "personas ni lugares que no se lean en la foto y sin empezar con \"La imagen muestra\".\n"
+    '"etiquetas": la traducción de cada etiqueta, en el mismo orden y con la misma cantidad, como sustantivos cortos '
+    "con espacios normales.\n"
+    'Ejemplo de etiquetas: ["Sunglasses", "Mobile Phone", "Coat"] → ["Gafas de sol", "Teléfono móvil", "Abrigo"]')
+MAX_DESCRIPCION = 300
 
 tabla = boto3.resource("dynamodb").Table(TABLA)
 s3 = boto3.client("s3")
@@ -51,24 +56,29 @@ def normalizar(texto):
     return re.sub(r"[#\s]+", " ", sin_tildes).strip().lower()
 
 
-def traducir(nombres):
-    """Etiquetas de Rekognition (solo inglés) al español con Nova Micro; si falla, quedan en inglés.
-    (Amazon Translate no está habilitado en la cuenta del curso: SubscriptionRequiredException)."""
-    if not nombres:
-        return []
+def describir(bucket, miniatura, nombres, textos):
+    """Una sola llamada a Nova Lite: mira la miniatura, escribe el pie de foto y traduce las etiquetas
+    (Rekognition solo da inglés y Amazon Translate no está habilitado en la cuenta del curso).
+    Si falla, la foto queda sin descripción y con las etiquetas en inglés."""
     try:
+        jpeg = s3.get_object(Bucket=bucket, Key=miniatura)["Body"].read()
+        pedido = f"Etiquetas: {json.dumps(nombres, ensure_ascii=False)}\nTexto en la foto: {' / '.join(textos)[:500] or '(ninguno)'}"
         r = bedrock.converse(modelId=MODELO, system=[{"text": INSTRUCCION}],
-                             messages=[{"role": "user", "content": [{"text": json.dumps(nombres)}]}],
-                             inferenceConfig={"maxTokens": 400, "temperature": 0})
+                             messages=[{"role": "user", "content": [
+                                 {"image": {"format": "jpeg", "source": {"bytes": jpeg}}}, {"text": pedido}]}],
+                             inferenceConfig={"maxTokens": 600, "temperature": 0})
         texto = r["output"]["message"]["content"][0]["text"].strip().removeprefix("```json").strip("`\n ")
+        datos = json.loads(texto)
+        descripcion = str(datos.get("descripcion", "")).strip()[:MAX_DESCRIPCION] or None
         # Nova a veces mezcla mayúsculas ("GAfas", "ACCESORIOS"): solo la inicial en mayúscula
-        traducidos = [str(t).strip().capitalize() for t in json.loads(texto)]
-        if len(traducidos) == len(nombres) and all(traducidos):
-            return traducidos
-        log.warning("Traducción desalineada: %r → %r", nombres, traducidos)
-    except (ClientError, ValueError, KeyError, TypeError):
-        log.exception("La traducción con Nova falló; se guardan las etiquetas en inglés")
-    return list(nombres)
+        traducidos = [str(t).strip().capitalize() for t in datos.get("etiquetas", [])]
+        if len(traducidos) != len(nombres) or not all(traducidos):
+            log.warning("Traducción desalineada: %r → %r", nombres, traducidos)
+            traducidos = list(nombres)
+        return traducidos, descripcion
+    except (ClientError, ValueError, KeyError, TypeError, AttributeError):
+        log.exception("Nova falló; se guardan las etiquetas en inglés y sin descripción")
+    return list(nombres), None
 
 
 def en_cuarentena(moderacion):
@@ -94,17 +104,19 @@ def lambda_handler(event, _context):
 
     etiquetas = sorted(lista(event.get("etiquetas")), key=lambda e: -e.get("Confidence", 0))
     nombres_en = [e["Name"] for e in etiquetas]
-    nombres_es = traducir(nombres_en)
     textos = [str(t) for t in lista(event.get("textos"))]
     bloqueo = en_cuarentena(lista(event.get("moderacion")))
     estado = "CUARENTENA" if bloqueo else "LISTA"
-
     actual = tabla.get_item(Key={"PK": pk, "SK": f"F#{foto}"}).get("Item")
     if not actual:
         # El usuario la borró mientras se analizaba: no se resucita y se limpia la miniatura
         log.info("Foto %s ya no existe; se descarta", foto)
         s3.delete_objects(Bucket=event["bucket"], Delete={"Objects": [{"Key": imagen["miniatura"]}, {"Key": imagen["revisada"]}]})
         return {"foto": foto, "estado": "BORRADA"}
+
+    # Lo que quedó en cuarentena no se le muestra a Nova
+    nombres_es, descripcion = (describir(event["bucket"], imagen["miniatura"], nombres_en, textos)
+                               if estado == "LISTA" else (list(nombres_en), None))
 
     # Orden de la galería: fecha de toma si la cámara la guardó, si no la de subida
     fecha_orden = f"{imagen.get('fecha_toma') or actual['fecha_subida']}#{foto}"
@@ -128,11 +140,11 @@ def lambda_handler(event, _context):
     tabla.update_item(
         Key={"PK": pk, "SK": f"F#{foto}"},
         UpdateExpression=("SET estado = :e, fecha_orden = :fo, fecha_toma = :ft, etiquetas = :et, etiquetas_en = :en, "
-                          "texto = :tx, moderacion = :mo, ancho = :an, alto = :al, camara = :ca, gps = :gp, "
+                          "texto = :tx, descripcion = :de, moderacion = :mo, ancho = :an, alto = :al, camara = :ca, gps = :gp, "
                           "miniatura = :mi, revisada = :rv, claves = :cl REMOVE expira"),
         ExpressionAttributeValues={
             ":e": estado, ":fo": fecha_orden, ":ft": imagen.get("fecha_toma"),
-            ":et": nombres_es, ":en": nombres_en, ":tx": "\n".join(textos), ":mo": bloqueo,
+            ":et": nombres_es, ":en": nombres_en, ":tx": "\n".join(textos), ":de": descripcion, ":mo": bloqueo,
             ":an": imagen["ancho"], ":al": imagen["alto"], ":ca": imagen.get("camara"),
             ":gp": {k: Decimal(str(v)) for k, v in gps.items()} if gps else None,
             ":mi": imagen["miniatura"], ":rv": imagen["revisada"], ":cl": list(claves),

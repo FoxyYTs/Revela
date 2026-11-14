@@ -68,6 +68,8 @@
   .detalle img { width: 100%; max-height: 80vh; object-fit: contain; background: #000; display: block; }
   .info { padding: 20px; display: flex; flex-direction: column; gap: 14px; overflow-y: auto; max-height: 80vh; }
   .info h3 { margin: 0; font: 600 20px Fraunces, serif; word-break: break-word; }
+  .descripcion { margin: -6px 0 0; color: var(--texto); font-size: 15px; line-height: 1.55; }
+  .descripcion:empty { display: none; }
   .info dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 14px; }
   .info dt { color: var(--suave); }
   .info pre { white-space: pre-wrap; margin: 0; font: 13px/1.4 ui-monospace, monospace; background: var(--fondo); padding: 10px; border-radius: 8px; }
@@ -143,6 +145,7 @@
     <img id="d-img" alt="">
     <div class="info">
       <h3 id="d-nombre"></h3>
+      <p id="d-descripcion" class="descripcion"></p>
       <div class="chips" id="d-etiquetas"></div>
       <dl id="d-datos"></dl>
       <div id="d-texto"></div>
@@ -340,7 +343,7 @@ $("#q").oninput = () => { if (!$("#q").value && estado.q) buscar(""); };
 
 function tarjeta(f) {
   const contenido = {
-    LISTA: () => [h("img", { src: f.miniatura, alt: f.etiquetas.join(", ") || f.nombre || "Foto", loading: "lazy" }),
+    LISTA: () => [h("img", { src: f.miniatura, alt: f.descripcion || f.etiquetas.join(", ") || f.nombre || "Foto", loading: "lazy" }),
                   h("span", { className: "pie", textContent: f.etiquetas.slice(0, 3).join(" · ") })],
     PROCESANDO: () => [h("span", { className: "aviso revelando", textContent: "Revelando…" })],
     CUARENTENA: () => [h("span", { className: "aviso", textContent: "🚫 Oculta por moderación" })],
@@ -372,7 +375,8 @@ async function abrir(id) {
   let f;
   try { f = await api("GET", `/fotos/${id}`); } catch (e) { return aviso(e.message); }
   $("#d-img").src = f.original || "";
-  $("#d-img").alt = (f.etiquetas || []).join(", ");
+  $("#d-img").alt = f.descripcion || (f.etiquetas || []).join(", ");
+  $("#d-descripcion").textContent = f.descripcion || "";
   $("#d-img").classList.toggle("oculto", !f.original);
   $("#d-nombre").textContent = f.nombre || "Foto sin nombre";
   $("#d-etiquetas").replaceChildren(...(f.etiquetas || []).map((e) =>
