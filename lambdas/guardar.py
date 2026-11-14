@@ -101,7 +101,9 @@ def geocodificar(gps):
         if not r.get("ResultItems"):
             return None
         d = r["ResultItems"][0].get("Address", {})
-        lugar = {"ciudad": d.get("Locality"), "region": (d.get("Region") or {}).get("Name"),
+        # En Colombia el departamento llega en SubRegion y Region viene vacía
+        region = (d.get("Region") or {}).get("Name") or (d.get("SubRegion") or {}).get("Name")
+        lugar = {"ciudad": d.get("Locality"), "region": region,
                  "pais": (d.get("Country") or {}).get("Name")}
         lugar = {k: v for k, v in lugar.items() if v}
         nombre = ", ".join(lugar[k] for k in ("ciudad", "region", "pais") if k in lugar)

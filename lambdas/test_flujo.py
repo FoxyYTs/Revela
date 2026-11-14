@@ -262,7 +262,7 @@ def test_archivo_que_no_es_imagen_falla(aws):
 
 RIONEGRO = {"PricingBucket": "Advanced", "ResultItems": [{"PlaceId": "x", "PlaceType": "Street", "Title": "Calle 41",
                              "Address": {"Label": "Calle 41, Rionegro, Antioquia, Colombia", "Locality": "Rionegro",
-                                         "Region": {"Code": "ANT", "Name": "Antioquia"},
+                                         "Region": {}, "SubRegion": {"Code": "AN", "Name": "Antioquia"},  # así responde en Colombia
                                          "Country": {"Code2": "CO", "Code3": "COL", "Name": "Colombia"}}}]}
 
 
