@@ -76,6 +76,28 @@ resource "aws_dynamodb_table" "fotos" {
   }
 }
 
+# Vectores de las miniaturas (Nova Multimodal Embeddings) para la búsqueda por significado; "usuario" es filtrable por defecto
+resource "aws_s3vectors_vector_bucket" "vectores" {
+  vector_bucket_name = "${var.prefijo}-vectores"
+  force_destroy      = true
+}
+
+resource "aws_s3vectors_index" "fotos" {
+  vector_bucket_name = aws_s3vectors_vector_bucket.vectores.vector_bucket_name
+  index_name         = "fotos"
+  data_type          = "float32"
+  dimension          = 1024
+  distance_metric    = "cosine"
+}
+
+output "vectores" {
+  value = aws_s3vectors_vector_bucket.vectores.vector_bucket_name
+}
+
+output "indice_arn" {
+  value = aws_s3vectors_index.fotos.index_arn
+}
+
 output "bucket" {
   value = aws_s3_bucket.fotos.bucket
 }

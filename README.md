@@ -15,6 +15,7 @@ Navegador ──Cognito (login)──► API Gateway HTTP (JWT) ──► Lambda
                                                                              └─ Rekognition DetectModerationLabels
                                                                           4. Lambda guardar (Nova Lite: pie de foto + traducción;
                                                                              Amazon Location: dirección del GPS) ──► DynamoDB
+                                                                             Nova Multimodal Embeddings ──► S3 Vectors
 Web: S3 privado ◄── CloudFront + OAC          Mapa: MapLibre + mosaicos de Amazon Location (API key solo para la web)
 ```
 
@@ -22,7 +23,7 @@ Web: S3 privado ◄── CloudFront + OAC          Mapa: MapLibre + mosaicos de
 |---|---|
 | `lambdas/` | `api.py`, `procesar.py`, `guardar.py` y `test_flujo.py` (moto) |
 | `web/` | `index.html` + `app.js`, sin build; la configuración llega en `config.js` (la escribe Terraform) |
-| `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web` (49 recursos) |
+| `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web` (54 recursos) |
 | `scripts/capa_pillow.sh` | Construye la capa de Pillow; Terraform la llama solo |
 
 ## Pruebas
@@ -58,6 +59,11 @@ Destruir: `terraform destroy` (los buckets tienen `force_destroy`).
   Amazon Location pone el nombre (ciudad, departamento, país) con `IntendedUse=Storage` porque se guarda, y se puede
   buscar por él. La API key del mapa va en un stack de CloudFormation (el provider no tiene recurso para keys v2)
   y solo sirve para mosaicos desde el dominio de la web.
+- Búsqueda por significado: `guardar` vectoriza la miniatura con Nova Multimodal Embeddings (1024 dimensiones,
+  multilingüe) y la guarda en S3 Vectors con el usuario como metadato filtrable. Al buscar, la API vectoriza el texto
+  y pide las 30 más cercanas del usuario con distancia coseno ≤ 0,72 (medido: "aula con tablero" 0,38 contra una foto
+  de un salón, "perro en la playa" 0,87). Primero van las coincidencias exactas por etiqueta, texto o lugar, después
+  las parecidas. Si Bedrock o S3 Vectors fallan, quedan solo las exactas.
 - Concurrencia de Lambda de la cuenta = 10 compartida: Step Functions reintenta con espera si se llena.
 - Cada foto se analiza una sola vez (paso `Reclamar`, escritura condicional en DynamoDB) y `procesar` copia a `fotos/`
   los bytes que leyó: Rekognition y la app usan esa copia, así que reusar la URL de subida no repite el gasto

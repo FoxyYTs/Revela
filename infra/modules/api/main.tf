@@ -18,6 +18,14 @@ variable "tabla_arn" {
   type = string
 }
 
+variable "vectores" {
+  type = string
+}
+
+variable "indice_arn" {
+  type = string
+}
+
 variable "zip" {
   type = string
 }
@@ -81,6 +89,9 @@ resource "aws_iam_role_policy" "api" {
       { Effect = "Allow", Action = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"], Resource = "${var.bucket_arn}/originales/*" },
       { Effect = "Allow", Action = ["s3:GetObject", "s3:DeleteObject"], Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*"] },
       { Effect = "Allow", Action = "geo:DescribeKey", Resource = var.mapa_key_arn },
+      # Buscar por significado: vector del texto con Nova y consulta filtrada por usuario (el filtro exige GetVectors)
+      { Effect = "Allow", Action = "bedrock:InvokeModel", Resource = "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-multimodal-embeddings-v1:0" },
+      { Effect = "Allow", Action = ["s3vectors:QueryVectors", "s3vectors:GetVectors", "s3vectors:DeleteVectors"], Resource = var.indice_arn },
     ]
   })
 }
@@ -106,6 +117,7 @@ resource "aws_lambda_function" "api" {
       BUCKET      = var.bucket
       SUBIDAS_DIA = "50"
       MAPA_KEY    = var.mapa_key
+      VECTORES    = var.vectores
     }
   }
 

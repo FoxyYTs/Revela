@@ -3,6 +3,8 @@ Rekognition no se simula: se pasan respuestas con la forma que entrega Step Func
 import io
 import json
 
+import botocore.response
+
 import boto3
 import pytest
 from botocore.stub import Stubber
@@ -41,6 +43,22 @@ def respuesta_nova(texto):
             "usage": {"inputTokens": 80, "outputTokens": 10, "totalTokens": 90}, "metrics": {"latencyMs": 300}}
 
 
+def respuesta_vector(valor=0.5):
+    cuerpo = json.dumps({"embeddings": [{"embeddingType": "IMAGE", "embedding": [valor] * 1024}]}).encode()
+    return {"body": botocore.response.StreamingBody(io.BytesIO(cuerpo), len(cuerpo)), "contentType": "application/json"}
+
+
+def vectores_de(*fotos):
+    r = boto3.client("s3vectors").get_vectors(vectorBucketName="revela-test", indexName="fotos", keys=list(fotos), returnMetadata=True)
+    return {v["key"]: v["metadata"] for v in r["vectors"]}
+
+
+@pytest.fixture(autouse=True)
+def sin_significado(monkeypatch):
+    # Bedrock y QueryVectors no existen en moto: salvo en su test, la búsqueda por significado no encuentra nada
+    monkeypatch.setattr(api, "por_significado", lambda usuario, texto: [])
+
+
 def llamar(ruta, cuerpo=None, params=None, foto=None):
     r = api.lambda_handler({"routeKey": ruta, "body": json.dumps(cuerpo) if cuerpo is not None else None,
                             "queryStringParameters": params, "pathParameters": {"id": foto} if foto else None,
@@ -62,6 +80,7 @@ def subir_y_analizar(traductor, etiquetas=PERRO, textos=None, moderacion=None, t
     boto3.client("s3").put_object(Bucket="revela-test", Key=key, Body=imagen or jpeg())
 
     traductor.add_response("converse", respuesta_nova(traduccion or nova(["Perro", "Playa"])))
+    traductor.add_response("invoke_model", respuesta_vector())
     imagen = procesar.lambda_handler({"bucket": "revela-test", "key": key}, None)
     resultado = guardar.lambda_handler({"bucket": "revela-test", "key": imagen["revisada"], "etiquetas": etiquetas,
                                         "textos": textos, "moderacion": moderacion, "imagen": imagen}, None)
@@ -109,8 +128,10 @@ def test_flujo_completo(aws, traductor):
     assert llamar("GET /fotos", params={"q": "gato"})[1]["fotos"] == []
 
     assert llamar("GET /etiquetas")[1]["etiquetas"] == [{"etiqueta": "Perro", "fotos": 1}, {"etiqueta": "Playa", "fotos": 1}]
+    assert vectores_de(foto) == {foto: {"usuario": USUARIO}}
 
     assert llamar("DELETE /fotos/{id}", foto=foto) == (204, None)
+    assert vectores_de(foto) == {}
     tabla = boto3.resource("dynamodb").Table("revela-test")
     assert [i["SK"][:5] for i in tabla.scan()["Items"]] == ["CUPO#"]  # el cupo del día no se devuelve al borrar
     assert boto3.client("s3").list_objects_v2(Bucket="revela-test")["KeyCount"] == 0
@@ -160,6 +181,7 @@ def test_cuarentena_no_indexa_ni_entrega_urls(aws, traductor):
     assert det["descripcion"] is None and det["etiquetas"] == ["Dog", "Beach"]  # a Nova no se le muestra
     assert "original" not in det and "miniatura" not in det
     assert llamar("GET /fotos", params={"q": "perro"})[1]["fotos"] == []
+    assert vectores_de(foto) == {}
 
 
 def test_traje_de_bano_o_confianza_baja_no_bloquean(aws, traductor):
@@ -192,12 +214,14 @@ def test_un_solo_elemento_y_sin_etiquetas(aws, traductor):
 
 def test_nova_falla_quedan_en_ingles(aws, traductor):
     traductor.add_client_error("converse", "ThrottlingException")
+    traductor.add_client_error("invoke_model", "ThrottlingException")
     status, subida = llamar("POST /subidas", {"tipo": "image/jpeg"})
     key = subida["campos"]["key"]
     boto3.client("s3").put_object(Bucket="revela-test", Key=key, Body=jpeg())
     imagen = procesar.lambda_handler({"bucket": "revela-test", "key": key}, None)
     guardar.lambda_handler({"bucket": "revela-test", "key": imagen["revisada"], "etiquetas": PERRO, "imagen": imagen}, None)
     assert llamar("GET /fotos/{id}", foto=subida["foto"])[1]["etiquetas"] == ["Dog", "Beach"]
+    assert vectores_de(subida["foto"]) == {}  # sin vector, pero la foto quedó LISTA
 
 
 def test_reprocesar_reemplaza_indices(aws, traductor):
@@ -207,6 +231,7 @@ def test_reprocesar_reemplaza_indices(aws, traductor):
     imagen = procesar.lambda_handler({"bucket": "revela-test", "key": key}, None)
     for etiquetas, traduccion in ((PERRO, nova(["Perro", "Playa"], cerca=True)), ([{"Name": "Cat", "Confidence": 90.0}], nova(["Gato"]))):
         traductor.add_response("converse", respuesta_nova(traduccion))
+        traductor.add_response("invoke_model", respuesta_vector())
         guardar.lambda_handler({"bucket": "revela-test", "key": imagen["revisada"], "etiquetas": etiquetas, "imagen": imagen}, None)
     assert llamar("GET /fotos", params={"q": "perro"})[1]["fotos"] == []
     assert len(llamar("GET /fotos", params={"q": "gato"})[1]["fotos"]) == 1
@@ -329,3 +354,38 @@ def test_subida_abandonada_se_oculta_y_analisis_trabado_es_error(aws, monkeypatc
     assert [(f["id"], f["estado"]) for f in llamar("GET /fotos")[1]["fotos"]] == [(trabada["foto"], "ERROR")]
     assert llamar("GET /fotos/{id}", foto=abandonada["foto"])[1]["estado"] is None  # el detalle no se rompe
     assert llamar("DELETE /fotos/{id}", foto=abandonada["foto"])[0] == 204  # la página la borra si S3 falla
+
+
+def test_busqueda_por_significado(aws, traductor, monkeypatch):
+    playa, _ = subir_y_analizar(traductor)
+    gato, _ = subir_y_analizar(traductor, etiquetas=[{"Name": "Cat", "Confidence": 90.0}], traduccion=nova(["Gato"]))
+    oculta, _ = subir_y_analizar(traductor, moderacion=[{"Name": "Explicit", "ParentName": "", "Confidence": 99.0}])
+    pedido = []
+    guardar.bedrock.meta.events.register("before-parameter-build.bedrock-runtime.InvokeModel", lambda params, **_: pedido.append(params))
+    traductor.add_response("invoke_model", respuesta_vector())
+    subir_y_analizar(traductor)  # registra el pedido del vector de la miniatura
+    cuerpo = json.loads(pedido[-1]["body"])["singleEmbeddingParams"]
+    assert cuerpo["embeddingPurpose"] == "GENERIC_INDEX" and cuerpo["image"]["format"] == "jpeg"
+
+    monkeypatch.undo()  # la búsqueda real, con Bedrock y QueryVectors simulados
+    cliente = boto3.client("s3vectors")
+    monkeypatch.setattr(api, "_vectores", cliente)
+    with Stubber(api.bedrock) as br, Stubber(cliente) as sv:
+        br.add_response("invoke_model", respuesta_vector())
+        # S3 Vectors devuelve de la más cercana a la más lejana; el vector viejo de la oculta no debe salir
+        sv.add_response("query_vectors", {"distanceMetric": "cosine", "vectors": [
+            {"key": oculta, "distance": 0.2}, {"key": playa, "distance": 0.3}, {"key": "f" * 32, "distance": 0.4},
+            {"key": gato, "distance": 0.5}, {"key": "a" * 32, "distance": 0.9}]},
+            {"vectorBucketName": "revela-test", "indexName": "fotos", "queryVector": {"float32": [0.5] * 1024}, "topK": 30,
+             "filter": {"usuario": USUARIO}, "returnDistance": True})
+        fotos = llamar("GET /fotos", params={"q": "un gato tomando el sol"})[1]["fotos"]
+        assert [(f["id"], f.get("parecida", False)) for f in fotos] == [(playa, True), (gato, True)]
+
+        # La coincidencia exacta va primero y no se repite entre las parecidas
+        br.add_response("invoke_model", respuesta_vector())
+        sv.add_response("query_vectors", {"distanceMetric": "cosine", "vectors": [{"key": playa, "distance": 0.3}, {"key": gato, "distance": 0.5}]})
+        fotos = llamar("GET /fotos", params={"q": "Gato"})[1]["fotos"]
+        assert [(f["id"], f.get("parecida", False)) for f in fotos] == [(gato, False), (playa, True)]
+
+        br.add_client_error("invoke_model", "ThrottlingException")
+        assert [f["id"] for f in llamar("GET /fotos", params={"q": "gato"})[1]["fotos"]] == [gato]  # quedan las exactas

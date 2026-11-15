@@ -30,6 +30,8 @@ module "pipeline" {
   bucket_arn  = module.datos.bucket_arn
   tabla       = module.datos.tabla
   tabla_arn   = module.datos.tabla_arn
+  vectores    = module.datos.vectores
+  indice_arn  = module.datos.indice_arn
   zip         = data.archive_file.lambdas.output_path
   zip_hash    = data.archive_file.lambdas.output_base64sha256
   script_capa = "${path.module}/../scripts/capa_pillow.sh"
@@ -42,6 +44,8 @@ module "api" {
   bucket_arn   = module.datos.bucket_arn
   tabla        = module.datos.tabla
   tabla_arn    = module.datos.tabla_arn
+  vectores     = module.datos.vectores
+  indice_arn   = module.datos.indice_arn
   zip          = data.archive_file.lambdas.output_path
   zip_hash     = data.archive_file.lambdas.output_base64sha256
   issuer       = module.auth.issuer

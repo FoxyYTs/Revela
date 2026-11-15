@@ -18,6 +18,14 @@ variable "tabla_arn" {
   type = string
 }
 
+variable "vectores" {
+  type = string
+}
+
+variable "indice_arn" {
+  type = string
+}
+
 variable "zip" {
   type = string
 }
@@ -173,9 +181,11 @@ resource "aws_iam_role_policy" "guardar" {
         Action = "bedrock:InvokeModel"
         Resource = concat(
           ["arn:aws:bedrock:us-east-1:${data.aws_caller_identity.actual.account_id}:inference-profile/us.${local.modelo}"],
-          [for r in ["us-east-1", "us-east-2", "us-west-2"] : "arn:aws:bedrock:${r}::foundation-model/${local.modelo}"]
+          [for r in ["us-east-1", "us-east-2", "us-west-2"] : "arn:aws:bedrock:${r}::foundation-model/${local.modelo}"],
+          ["arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-multimodal-embeddings-v1:0"]
         )
       },
+      { Effect = "Allow", Action = "s3vectors:PutVectors", Resource = var.indice_arn },
     ]
   })
 }
@@ -200,6 +210,7 @@ resource "aws_lambda_function" "guardar" {
       TABLA             = var.tabla
       UMBRAL_MODERACION = "80"
       MODELO            = "us.${local.modelo}"
+      VECTORES          = var.vectores
     }
   }
 

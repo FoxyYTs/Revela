@@ -1,7 +1,7 @@
 """API de Revela detrás de API Gateway HTTP con autorizador JWT de Cognito.
 
 POST   /subidas       → URL prefirmada para subir una foto directo a S3
-GET    /fotos         → galería por fecha (?siguiente=cursor) o búsqueda (?q=perro)
+GET    /fotos         → galería por fecha (?siguiente=cursor) o búsqueda (?q=perro), exacta y por significado
 GET    /fotos/{id}    → detalle con la URL del original
 DELETE /fotos/{id}    → borra la foto, la miniatura y sus índices
 GET    /etiquetas     → etiquetas del usuario con cuántas fotos tiene cada una
@@ -40,11 +40,26 @@ MAPA_KEY = os.environ.get("MAPA_KEY", "jyj-revela-mapa")
 MAX_LUGARES = 500
 # Una foto que sigue en PROCESANDO después de esto se abandonó (la subida a S3 falló) o el análisis se trabó
 ESPERA_ANALISIS = timedelta(minutes=10)
+VECTORES = os.environ.get("VECTORES", "jyj-revela-vectores")
+EMBEDDINGS = "amazon.nova-2-multimodal-embeddings-v1:0"
+POR_SIGNIFICADO = 30
+# shortcut: umbral medido con una sola foto (relacionadas 0.38-0.70, ajenas 0.74-0.87); recalibrar con más fotos
+DISTANCIA_MAX = float(os.environ.get("DISTANCIA_MAX", "0.72"))
 
 dynamo = boto3.resource("dynamodb")
 tabla = dynamo.Table(TABLA)
 s3 = boto3.client("s3", config=Config(signature_version="s3v4"))
+bedrock = boto3.client("bedrock-runtime")
 _clave_mapa = None
+_vectores = None
+
+
+def vectores():
+    # Perezoso: si el boto3 del runtime no trae s3vectors, solo se pierde la búsqueda por significado
+    global _vectores
+    if _vectores is None:
+        _vectores = boto3.client("s3vectors")
+    return _vectores
 
 
 class ErrorCliente(Exception):
@@ -144,9 +159,10 @@ def crear_subida(usuario, cuerpo):
 
 def listar(usuario, params):
     pk = f"U#{usuario}"
-    q = normalizar(params.get("q", ""))
+    texto = params.get("q", "")[:200]
+    q = normalizar(texto)
     if q:
-        return 200, {"fotos": buscar(pk, q), "siguiente": None}
+        return 200, {"fotos": buscar(usuario, q, texto), "siguiente": None}
 
     consulta = {"IndexName": "por-fecha", "KeyConditionExpression": Key("PK").eq(pk),
                 "ScanIndexForward": False, "Limit": POR_PAGINA}
@@ -163,23 +179,40 @@ def listar(usuario, params):
                  "siguiente": base64.urlsafe_b64encode(json.dumps(siguiente).encode()).decode() if siguiente else None}
 
 
-def buscar(pk, q):
-    # shortcut: máximo 100 resultados sin paginar; paginar si una búsqueda llega a ese tope
-    ids = []
+def por_significado(usuario, texto):
+    """Ids de las fotos cuyo vector queda cerca del texto, de la más parecida a la menos."""
+    cuerpo = {"taskType": "SINGLE_EMBEDDING", "singleEmbeddingParams": {
+        "embeddingPurpose": "IMAGE_RETRIEVAL", "embeddingDimension": 1024, "text": {"truncationMode": "END", "value": texto}}}
+    vector = json.loads(bedrock.invoke_model(modelId=EMBEDDINGS, body=json.dumps(cuerpo))["body"].read())["embeddings"][0]["embedding"]
+    r = vectores().query_vectors(vectorBucketName=VECTORES, indexName="fotos", queryVector={"float32": vector},
+                                 topK=POR_SIGNIFICADO, filter={"usuario": usuario}, returnDistance=True)
+    return [v["key"] for v in r["vectors"] if v["distance"] <= DISTANCIA_MAX]
+
+
+def buscar(usuario, q, texto):
+    # shortcut: máximo 100 resultados exactos sin paginar; paginar si una búsqueda llega a ese tope
+    pk, exactas = f"U#{usuario}", []
     for prefijo in ("E#", "T#", "L#"):
         r = tabla.query(KeyConditionExpression=Key("PK").eq(pk) & Key("SK").begins_with(f"{prefijo}{q}#"),
                         ScanIndexForward=False, Limit=100)
-        ids += [i["foto"] for i in r["Items"] if i["foto"] not in ids]
-    ids = ids[:100]
-    if not ids:
+        exactas += [i["foto"] for i in r["Items"] if i["foto"] not in exactas]
+    exactas = exactas[:100]
+    try:
+        parecidas = [i for i in por_significado(usuario, texto) if i not in exactas]
+    except Exception as e:  # noqa: BLE001 — si Bedrock o S3 Vectors fallan quedan las coincidencias exactas
+        log.warning("Búsqueda por significado falló: %s", type(e).__name__)
+        parecidas = []
+    if not exactas and not parecidas:
         return []
-    items, pedido = [], {TABLA: {"Keys": [{"PK": pk, "SK": f"F#{i}"} for i in ids]}}
+    ids = (exactas + parecidas)[:100]  # tope de BatchGetItem
+    items, pedido = {}, {TABLA: {"Keys": [{"PK": pk, "SK": f"F#{i}"} for i in ids]}}
     while pedido:  # DynamoDB puede devolver parte de las llaves sin leer si hay mucha carga
         r = dynamo.batch_get_item(RequestItems=pedido)
-        items += r["Responses"][TABLA]
+        items.update((i["SK"][2:], i) for i in r["Responses"][TABLA])
         pedido = r.get("UnprocessedKeys")
-    fotos = [resumen(i) for i in items]
-    return sorted(fotos, key=lambda f: f["fecha"], reverse=True)
+    # Primero las exactas por fecha, luego las parecidas por cercanía; un vector viejo de una foto en cuarentena no sale
+    fotos = sorted((resumen(items[i]) for i in exactas if i in items), key=lambda f: f["fecha"], reverse=True)
+    return fotos + [{**resumen(items[i]), "parecida": True} for i in parecidas if i in items and items[i]["estado"] == "LISTA"]
 
 
 def obtener(usuario, foto):
@@ -202,6 +235,7 @@ def detalle(usuario, foto):
 def borrar(usuario, foto):
     item = obtener(usuario, foto)
     pk = f"U#{usuario}"
+    vectores().delete_vectors(vectorBucketName=VECTORES, indexName="fotos", keys=[foto])  # primero: si falla, no queda nada a medias
     s3.delete_objects(Bucket=BUCKET, Delete={"Objects": [{"Key": k} for k in (item["original"], item.get("revisada"), item.get("miniatura")) if k]})
     with tabla.batch_writer() as lote:
         for sk in item.get("claves", []):

@@ -9,7 +9,9 @@ Modelo de la tabla (una sola tabla, PK = "U#<usuario>"):
   SK "E#<etiqueta>#<fecha_orden>" → índice por etiqueta de Rekognition (es y en)
   SK "T#<palabra>#<fecha_orden>"  → índice por palabra leída con OCR
   SK "L#<lugar>#<fecha_orden>"    → índice por ciudad, departamento y país (Amazon Location)
+Aparte, el vector de la miniatura va a S3 Vectors (key = foto, metadato usuario) para buscar por significado.
 """
+import base64
 import json
 import logging
 import os
@@ -39,8 +41,11 @@ INSTRUCCION = (
     "con espacios normales.\n"
     'Ejemplo de etiquetas: ["Sunglasses", "Mobile Phone", "Coat"] → ["Gafas de sol", "Teléfono móvil", "Abrigo"]')
 MAX_DESCRIPCION = 300
+VECTORES = os.environ.get("VECTORES", "jyj-revela-vectores")
+EMBEDDINGS = "amazon.nova-2-multimodal-embeddings-v1:0"  # multilingüe: la búsqueda en español cae cerca de la imagen
 
 _lugares = None
+_vectores = None
 
 
 def lugares():
@@ -49,6 +54,13 @@ def lugares():
     if _lugares is None:
         _lugares = boto3.client("geo-places")
     return _lugares
+
+
+def vectores():
+    global _vectores
+    if _vectores is None:
+        _vectores = boto3.client("s3vectors")
+    return _vectores
 
 
 tabla = boto3.resource("dynamodb").Table(TABLA)
@@ -68,12 +80,11 @@ def normalizar(texto):
     return re.sub(r"[#\s]+", " ", sin_tildes).strip().lower()
 
 
-def describir(bucket, miniatura, nombres, textos):
+def describir(jpeg, nombres, textos):
     """Una sola llamada a Nova Lite: mira la miniatura, escribe el pie de foto y traduce las etiquetas
     (Rekognition solo da inglés y Amazon Translate no está habilitado en la cuenta del curso).
     Si falla, la foto queda sin descripción y con las etiquetas en inglés."""
     try:
-        jpeg = s3.get_object(Bucket=bucket, Key=miniatura)["Body"].read()
         pedido = f"Etiquetas: {json.dumps(nombres, ensure_ascii=False)}\nTexto en la foto: {' / '.join(textos)[:500] or '(ninguno)'}"
         r = bedrock.converse(modelId=MODELO, system=[{"text": INSTRUCCION}],
                              messages=[{"role": "user", "content": [
@@ -91,6 +102,19 @@ def describir(bucket, miniatura, nombres, textos):
     except (ClientError, ValueError, KeyError, TypeError, AttributeError):
         log.exception("Nova falló; se guardan las etiquetas en inglés y sin descripción")
     return list(nombres), None
+
+
+def vectorizar(foto, usuario, jpeg):
+    """Vector de la miniatura en S3 Vectors; si falla, la foto solo se encuentra por etiquetas, texto y lugar."""
+    try:
+        cuerpo = {"taskType": "SINGLE_EMBEDDING", "singleEmbeddingParams": {
+            "embeddingPurpose": "GENERIC_INDEX", "embeddingDimension": 1024,
+            "image": {"format": "jpeg", "source": {"bytes": base64.b64encode(jpeg).decode()}}}}
+        r = json.loads(bedrock.invoke_model(modelId=EMBEDDINGS, body=json.dumps(cuerpo))["body"].read())
+        vectores().put_vectors(vectorBucketName=VECTORES, indexName="fotos", vectors=[
+            {"key": foto, "data": {"float32": r["embeddings"][0]["embedding"]}, "metadata": {"usuario": usuario}}])
+    except Exception as e:  # noqa: BLE001 — sin vector la foto sigue guardada
+        log.warning("No se pudo vectorizar la foto %s: %s", foto, type(e).__name__)
 
 
 def geocodificar(gps):
@@ -146,9 +170,12 @@ def lambda_handler(event, _context):
         s3.delete_objects(Bucket=event["bucket"], Delete={"Objects": [{"Key": imagen["miniatura"]}, {"Key": imagen["revisada"]}]})
         return {"foto": foto, "estado": "BORRADA"}
 
-    # Lo que quedó en cuarentena no se le muestra a Nova
-    nombres_es, descripcion = (describir(event["bucket"], imagen["miniatura"], nombres_en, textos)
-                               if estado == "LISTA" else (list(nombres_en), None))
+    # Lo que quedó en cuarentena no se le muestra a Nova ni se vectoriza
+    nombres_es, descripcion = list(nombres_en), None
+    if estado == "LISTA":
+        jpeg = s3.get_object(Bucket=event["bucket"], Key=imagen["miniatura"])["Body"].read()
+        nombres_es, descripcion = describir(jpeg, nombres_en, textos)
+        vectorizar(foto, usuario, jpeg)
 
     # GPS de la foto; si el celular lo borró, la ubicación que dio el navegador al subir
     gps = imagen.get("gps")

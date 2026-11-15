@@ -192,7 +192,7 @@ function tarjeta(f) {
     CUARENTENA: () => [h("span", { className: "aviso", textContent: "🚫 Oculta por moderación" })],
     ERROR: () => [h("span", { className: "aviso", textContent: "⚠️ No se pudo analizar" })],
   }[f.estado]();
-  return h("button", { className: "foto", onclick: () => abrir(f.id), title: f.nombre || "" }, contenido);
+  return h("button", { className: "foto", onclick: () => abrir(f.id), title: (f.parecida ? "Parecida a tu búsqueda · " : "") + (f.nombre || "") }, contenido);
 }
 
 function pintar() {
@@ -201,7 +201,8 @@ function pintar() {
   $("#btn-mas").classList.toggle("oculto", !estado.siguiente);
   const eb = $("#estado-busqueda");
   eb.classList.toggle("oculto", !estado.q);
-  eb.textContent = estado.q ? `${estado.fotos.length} foto(s) para “${estado.q}”` : "";
+  const parecidas = estado.fotos.filter((f) => f.parecida).length;
+  eb.textContent = estado.q ? `${estado.fotos.length} foto(s) para “${estado.q}”` + (parecidas ? ` · ${parecidas} por parecido` : "") : "";
 
   // Mientras alguna foto se esté revelando, refresca la galería cada 3 s
   clearTimeout(estado.sondeo);
