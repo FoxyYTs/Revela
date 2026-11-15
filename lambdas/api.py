@@ -43,6 +43,7 @@ EXPIRA_PENDIENTE = 24 * 3600  # una subida que nunca llega se borra sola por TTL
 # Tope de gasto por persona: cada subida cuesta 3 llamadas a Rekognition + Nova. Cuenta las URLs pedidas, no las fotos
 # que llegan, para que pedir URLs en bucle también se frene
 SUBIDAS_DIA = int(os.environ.get("SUBIDAS_DIA", "50"))
+BUSQUEDAS_CARAS_DIA = 30  # cada "Buscar caras" cuesta hasta 31 llamadas a Rekognition (10 caras × 3 + IndexFaces)
 COLOMBIA = timezone(timedelta(hours=-5))
 MAPA_KEY = os.environ.get("MAPA_KEY", "jyj-revela-mapa")
 MAX_LUGARES = 500
@@ -126,19 +127,19 @@ def leer_ubicacion(valor):
     return {"lat": Decimal(str(round(lat, 6))), "lon": Decimal(str(round(lon, 6)))}
 
 
-def descontar_cupo(usuario):
+def descontar_cupo(usuario, contador="subidas", tope=None, mensaje=None):
     # Contador atómico por día: la condición impide pasar el tope aunque lleguen peticiones simultáneas
     hoy = datetime.now(COLOMBIA)
     try:
         tabla.update_item(
             Key={"PK": f"U#{usuario}", "SK": f"CUPO#{hoy:%Y-%m-%d}"},
-            UpdateExpression="ADD subidas :uno SET expira = if_not_exists(expira, :expira)",
-            ConditionExpression="attribute_not_exists(subidas) OR subidas < :tope",
-            ExpressionAttributeValues={":uno": 1, ":tope": SUBIDAS_DIA, ":expira": int(hoy.timestamp()) + 2 * 86400})
+            UpdateExpression=f"ADD {contador} :uno SET expira = if_not_exists(expira, :expira)",
+            ConditionExpression=f"attribute_not_exists({contador}) OR {contador} < :tope",
+            ExpressionAttributeValues={":uno": 1, ":tope": tope or SUBIDAS_DIA, ":expira": int(hoy.timestamp()) + 2 * 86400})
     except ClientError as e:
         if e.response["Error"]["Code"] != "ConditionalCheckFailedException":
             raise
-        raise ErrorCliente(429, f"Llegaste al límite de {SUBIDAS_DIA} fotos por día; mañana puedes subir más") from None
+        raise ErrorCliente(429, mensaje or f"Llegaste al límite de {SUBIDAS_DIA} fotos por día; mañana puedes subir más") from None
 
 
 def crear_subida(usuario, cuerpo):
@@ -385,6 +386,8 @@ def buscar_caras(usuario, foto):
         raise ErrorCliente(409, "Solo se buscan caras en fotos ya analizadas")
     if not tabla.get_item(Key={"PK": pk, "SK": "PERFIL"}).get("Item", {}).get("personas"):
         raise ErrorCliente(409, "Primero activa Personas")
+    descontar_cupo(usuario, "busquedas_caras", BUSQUEDAS_CARAS_DIA,
+                   f"Llegaste al límite de {BUSQUEDAS_CARAS_DIA} búsquedas de caras por día; mañana puedes buscar más")
     personas, caras = rostros.reconocer(usuario, foto, BUCKET, item.get("revisada", item["original"]), calidad="LOW")
     if item.get("caras"):
         rostros.borrar(usuario, item["caras"])

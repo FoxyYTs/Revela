@@ -495,7 +495,7 @@ def test_caras_no_quedan_huerfanas(aws, traductor, caras):
     assert llamar("GET /fotos/{id}", foto=subida["foto"])[1]["personas"] == []
 
 
-def test_portada_y_volver_a_buscar_caras(aws, traductor, caras):
+def test_portada_y_volver_a_buscar_caras(aws, traductor, caras, monkeypatch):
     s, _ = caras
     coleccion = f"jyj-revela-caras-{USUARIO}"
     antes, _ = subir_y_analizar(traductor)  # subida antes de activar: sin caras
@@ -538,3 +538,9 @@ def test_portada_y_volver_a_buscar_caras(aws, traductor, caras):
     assert llamar("GET /personas")[1]["personas"][0]["fotos"] == 2
     assert {f["id"] for f in llamar("GET /fotos", params={"q": "perro"})[1]["fotos"]} == {antes, *fotos}  # las otras claves siguen
     s.assert_no_pending_responses()
+
+    # Tope diario propio, aparte del de subidas
+    monkeypatch.setattr(api, "BUSQUEDAS_CARAS_DIA", 2)
+    status, r = llamar("POST /fotos/{id}/caras", foto=antes)
+    assert status == 429 and "búsquedas de caras" in r["error"]
+    assert llamar("POST /subidas", {"tipo": "image/jpeg"})[0] == 201
