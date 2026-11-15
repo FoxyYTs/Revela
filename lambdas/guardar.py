@@ -9,6 +9,7 @@ Modelo de la tabla (una sola tabla, PK = "U#<usuario>"):
   SK "E#<etiqueta>#<fecha_orden>" → índice por etiqueta de Rekognition (es y en)
   SK "T#<palabra>#<fecha_orden>"  → índice por palabra leída con OCR
   SK "L#<lugar>#<fecha_orden>"    → índice por ciudad, departamento y país (Amazon Location)
+  SK "P#<persona>#<fecha_orden>"  → índice por persona, con la caja de la cara (solo si el usuario activó personas)
 Aparte, el vector de la miniatura va a S3 Vectors (key = foto, metadato usuario) para buscar por significado.
 """
 import base64
@@ -17,6 +18,7 @@ import logging
 import os
 import re
 import unicodedata
+import uuid
 from decimal import Decimal
 
 import boto3
@@ -43,6 +45,9 @@ INSTRUCCION = (
 MAX_DESCRIPCION = 300
 VECTORES = os.environ.get("VECTORES", "jyj-revela-vectores")
 EMBEDDINGS = "amazon.nova-2-multimodal-embeddings-v1:0"  # multilingüe: la búsqueda en español cae cerca de la imagen
+CARAS = os.environ.get("CARAS", "jyj-revela-caras-")  # + usuario: una colección por persona, nunca se cruzan caras entre cuentas
+UMBRAL_CARA = 90
+MAX_CARAS = 10
 
 _lugares = None
 _vectores = None
@@ -66,6 +71,7 @@ def vectores():
 tabla = boto3.resource("dynamodb").Table(TABLA)
 s3 = boto3.client("s3")
 bedrock = boto3.client("bedrock-runtime")
+rekognition = boto3.client("rekognition")
 
 
 def lista(valor):
@@ -115,6 +121,32 @@ def vectorizar(foto, usuario, jpeg):
             {"key": foto, "data": {"float32": r["embeddings"][0]["embedding"]}, "metadata": {"usuario": usuario}}])
     except Exception as e:  # noqa: BLE001 — sin vector la foto sigue guardada
         log.warning("No se pudo vectorizar la foto %s: %s", foto, type(e).__name__)
+
+
+def reconocer(usuario, foto, bucket, key, viejas):
+    """Indexa las caras en la colección del usuario y las agrupa con Rekognition Users: una cara que se parece a una
+    persona ya conocida se le asocia; si no, es una persona nueva. Devuelve ([(persona, caja)], [face_id])."""
+    coleccion = CARAS + usuario
+    try:
+        if viejas:  # reproceso: no duplicar las caras de la pasada anterior
+            rekognition.delete_faces(CollectionId=coleccion, FaceIds=viejas)
+        r = rekognition.index_faces(CollectionId=coleccion, Image={"S3Object": {"Bucket": bucket, "Name": key}},
+                                    ExternalImageId=foto, MaxFaces=MAX_CARAS, QualityFilter="AUTO")
+    except rekognition.exceptions.ResourceNotFoundException:
+        return [], []  # desactivó personas mientras se analizaba la foto
+    personas, caras = [], []
+    for registro in r["FaceRecords"]:
+        cara = registro["Face"]["FaceId"]
+        parecidas = rekognition.search_users(CollectionId=coleccion, FaceId=cara, UserMatchThreshold=UMBRAL_CARA, MaxUsers=1)["UserMatches"]
+        persona = parecidas[0]["User"]["UserId"] if parecidas else uuid.uuid4().hex
+        if not parecidas:
+            rekognition.create_user(CollectionId=coleccion, UserId=persona)
+        rekognition.associate_faces(CollectionId=coleccion, UserId=persona, FaceIds=[cara], UserMatchThreshold=UMBRAL_CARA)
+        # La caja ya viene corregida por la orientación EXIF, igual que la miniatura
+        caja = {k: Decimal(str(round(v, 4))) for k, v in registro["Face"]["BoundingBox"].items()}
+        personas.append((persona, caja))
+        caras.append(cara)
+    return personas, caras
 
 
 def geocodificar(gps):
@@ -172,10 +204,14 @@ def lambda_handler(event, _context):
 
     # Lo que quedó en cuarentena no se le muestra a Nova ni se vectoriza
     nombres_es, descripcion = list(nombres_en), None
+    personas, caras = [], []
     if estado == "LISTA":
         jpeg = s3.get_object(Bucket=event["bucket"], Key=imagen["miniatura"])["Body"].read()
         nombres_es, descripcion = describir(jpeg, nombres_en, textos)
         vectorizar(foto, usuario, jpeg)
+        # Datos biométricos: solo si el usuario dio su consentimiento en la página
+        if tabla.get_item(Key={"PK": pk, "SK": "PERFIL"}).get("Item", {}).get("personas"):
+            personas, caras = reconocer(usuario, foto, event["bucket"], imagen["revisada"], actual.get("caras", []))
 
     # GPS de la foto; si el celular lo borró, la ubicación que dio el navegador al subir
     gps = imagen.get("gps")
@@ -191,30 +227,33 @@ def lambda_handler(event, _context):
     if estado == "LISTA":
         for es, en in zip(nombres_es, nombres_en, strict=True):
             for nombre in (es, en):
-                claves.setdefault(f"E#{normalizar(nombre)}#{fecha_orden}", es)
+                claves.setdefault(f"E#{normalizar(nombre)}#{fecha_orden}", {"etiqueta": es})
         for p in palabras(textos):
-            claves.setdefault(f"T#{p}#{fecha_orden}", p)
+            claves.setdefault(f"T#{p}#{fecha_orden}", {"etiqueta": p})
         for nombre in {(lugar or {}).get(k) for k in ("ciudad", "region", "pais")} - {None}:
-            claves.setdefault(f"L#{normalizar(nombre)}#{fecha_orden}", nombre)
+            claves.setdefault(f"L#{normalizar(nombre)}#{fecha_orden}", {"etiqueta": nombre})
+        for persona, caja in personas:
+            claves.setdefault(f"P#{persona}#{fecha_orden}", {"persona": persona, "caja": caja})
 
     # Si la foto se reprocesa (SQS entrega al menos una vez) se reemplazan los índices viejos
     with tabla.batch_writer(overwrite_by_pkeys=["PK", "SK"]) as lote:
         for sk in set(actual.get("claves", [])) - set(claves):
             lote.delete_item(Key={"PK": pk, "SK": sk})
-        for sk, nombre in claves.items():
-            lote.put_item(Item={"PK": pk, "SK": sk, "foto": foto, "etiqueta": nombre})
+        for sk, datos in claves.items():
+            lote.put_item(Item={"PK": pk, "SK": sk, "foto": foto, **datos})
 
     tabla.update_item(
         Key={"PK": pk, "SK": f"F#{foto}"},
         UpdateExpression=("SET estado = :e, fecha_orden = :fo, fecha_toma = :ft, etiquetas = :et, etiquetas_en = :en, "
                           "texto = :tx, descripcion = :de, moderacion = :mo, ancho = :an, alto = :al, camara = :ca, gps = :gp, gps_fuente = :gf, lugar = :lu, "
-                          "miniatura = :mi, revisada = :rv, claves = :cl REMOVE expira"),
+                          "miniatura = :mi, revisada = :rv, claves = :cl, personas = :pe, caras = :cr REMOVE expira"),
         ExpressionAttributeValues={
             ":e": estado, ":fo": fecha_orden, ":ft": imagen.get("fecha_toma"),
             ":et": nombres_es, ":en": nombres_en, ":tx": "\n".join(textos), ":de": descripcion, ":mo": bloqueo,
             ":an": imagen["ancho"], ":al": imagen["alto"], ":ca": imagen.get("camara"),
             ":gp": {k: Decimal(str(v)) for k, v in gps.items()} if gps else None, ":gf": fuente, ":lu": lugar,
             ":mi": imagen["miniatura"], ":rv": imagen["revisada"], ":cl": list(claves),
+            ":pe": list(dict.fromkeys(p for p, _ in personas)), ":cr": caras,
         },
     )
     log.info("Foto %s → %s (%d etiquetas, %d índices)", foto, estado, len(nombres_es), len(claves))

@@ -143,9 +143,10 @@ $("#btn-salir").onclick = async () => {
 
 // ---------- Galería ----------
 
-const estado = { q: "", siguiente: null, fotos: [], sondeo: null, cargada: 0 };
+const estado = { q: "", persona: null, siguiente: null, fotos: [], sondeo: null, cargada: 0, personas: { activo: false, personas: [] } };
 
 function entrar() {
+  estado.persona = null;  // otra cuenta pudo dejar un filtro puesto
   $("#acceso").classList.add("oculto");
   $("#app").classList.remove("oculto");
   cargar();
@@ -155,13 +156,14 @@ async function cargar(mas = false) {
   try {
     const params = new URLSearchParams();
     if (estado.q) params.set("q", estado.q);
+    if (estado.persona) params.set("persona", estado.persona);
     if (mas && estado.siguiente) params.set("siguiente", estado.siguiente);
     const r = await api("GET", `/fotos?${params}`);
     estado.fotos = mas ? estado.fotos.concat(r.fotos) : r.fotos;
     if (!mas) estado.cargada = Date.now();
     estado.siguiente = r.siguiente;
     pintar();
-    if (!mas) cargarEtiquetas().catch(() => {});
+    if (!mas) { cargarEtiquetas().catch(() => {}); cargarPersonas().catch(() => {}); }
   } catch (e) { if (e.message !== "sesión cerrada") aviso(e.message); }
 }
 
@@ -174,12 +176,66 @@ async function cargarEtiquetas() {
 
 const normal = (t) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
 
-function buscar(q) {
+function buscar(q, persona = null) {
   if (!$("#vista-mapa").classList.contains("oculto")) verMapa(false);
   $("#q").value = q;
   estado.q = q.trim();
+  estado.persona = persona;
   cargar();
 }
+
+// ---------- Personas (opcional, con consentimiento) ----------
+
+const nombrePersona = (id) => estado.personas.personas.find((p) => p.id === id)?.nombre || "Sin nombre";
+
+// Recorta la miniatura alrededor de la cara: todo en fracciones del ancho de la imagen, recorte cuadrado con margen
+function cara(p) {
+  const img = h("img", { src: p.portada.miniatura, alt: "" });
+  img.onload = () => {
+    const { Left: l, Top: t, Width: w, Height: alto } = p.portada.caja;
+    const ar = img.naturalHeight / img.naturalWidth;
+    const lado = Math.max(w, alto * ar) * 1.6;
+    const cx = l + w / 2, cy = (t + alto / 2) * ar;
+    Object.assign(img.style, { width: `${100 / lado}%`, left: `${-(cx - lado / 2) / lado * 100}%`, top: `${-(cy - lado / 2) / lado * 100}%` });
+  };
+  return h("span", { className: "cara" }, img);
+}
+
+async function cargarPersonas() {
+  estado.personas = await api("GET", "/personas");
+  $("#personas").replaceChildren(...estado.personas.personas.map((p) =>
+    h("button", { className: "persona" + (estado.persona === p.id ? " activo" : ""), title: `${p.fotos} foto(s)`,
+                  onclick: () => buscar("", estado.persona === p.id ? null : p.id) },
+      cara(p), h("span", { textContent: p.nombre || "Sin nombre" }))));
+  $("#personas").classList.toggle("oculto", !estado.personas.personas.length);
+}
+
+async function nombrar() {
+  const nombre = prompt("¿Cómo se llama esta persona?", estado.personas.personas.find((p) => p.id === estado.persona)?.nombre || "");
+  if (nombre === null) return;
+  try { await api("PUT", `/personas/${estado.persona}`, { nombre }); await cargarPersonas(); pintar(); } catch (e) { aviso(e.message); }
+}
+
+function pintarConsentimiento() {
+  const { activo } = estado.personas;
+  $("#p-estado").textContent = activo ? "Está activado: las fotos nuevas se agrupan por persona." : "Está desactivado.";
+  $("#p-activar").classList.toggle("oculto", activo);
+  $("#p-desactivar").classList.toggle("oculto", !activo);
+}
+
+$("#btn-personas").onclick = () => { pintarConsentimiento(); $("#dlg-personas").showModal(); };
+$("#p-cerrar").onclick = () => $("#dlg-personas").close();
+$("#p-activar").onclick = async () => {
+  try { estado.personas = await api("PUT", "/personas"); pintarConsentimiento(); } catch (e) { aviso(e.message); }
+};
+$("#p-desactivar").onclick = async () => {
+  if (!confirm("Se borran todas las huellas de caras y los nombres que pusiste. ¿Seguir?")) return;
+  try {
+    estado.personas = await api("DELETE", "/personas");
+    $("#dlg-personas").close();
+    buscar("");
+  } catch (e) { aviso(e.message); }
+};
 
 $("#form-buscar").onsubmit = (e) => { e.preventDefault(); buscar($("#q").value); };
 $("#q").oninput = () => { if (!$("#q").value && estado.q) buscar(""); };
@@ -197,16 +253,22 @@ function tarjeta(f) {
 
 function pintar() {
   $("#grilla").replaceChildren(...estado.fotos.map(tarjeta));
-  $("#vacio").classList.toggle("oculto", estado.fotos.length > 0 || !!estado.q);
+  $("#vacio").classList.toggle("oculto", estado.fotos.length > 0 || !!estado.q || !!estado.persona);
   $("#btn-mas").classList.toggle("oculto", !estado.siguiente);
   const eb = $("#estado-busqueda");
-  eb.classList.toggle("oculto", !estado.q);
+  eb.classList.toggle("oculto", !estado.q && !estado.persona);
   const parecidas = estado.fotos.filter((f) => f.parecida).length;
-  eb.textContent = estado.q ? `${estado.fotos.length} foto(s) para “${estado.q}”` + (parecidas ? ` · ${parecidas} por parecido` : "") : "";
+  if (estado.persona) {
+    eb.replaceChildren(`${estado.fotos.length} foto(s) de ${nombrePersona(estado.persona)}`,
+      h("button", { className: "chip", textContent: "✏️ Ponerle nombre", onclick: nombrar }),
+      h("button", { className: "chip", textContent: "✕ Ver todas", onclick: () => buscar("") }));
+  } else {
+    eb.textContent = estado.q ? `${estado.fotos.length} foto(s) para “${estado.q}”` + (parecidas ? ` · ${parecidas} por parecido` : "") : "";
+  }
 
   // Mientras alguna foto se esté revelando, refresca la galería cada 3 s
   clearTimeout(estado.sondeo);
-  if (!estado.q && estado.fotos.some((f) => f.estado === "PROCESANDO")) estado.sondeo = setTimeout(() => cargar(), 3000);
+  if (!estado.q && !estado.persona && estado.fotos.some((f) => f.estado === "PROCESANDO")) estado.sondeo = setTimeout(() => cargar(), 3000);
 }
 
 $("#btn-mas").onclick = () => cargar(true);
@@ -228,8 +290,11 @@ async function abrir(id) {
   $("#d-descripcion").textContent = f.descripcion || "";
   $("#d-img").classList.toggle("oculto", !f.original);
   $("#d-nombre").textContent = f.nombre || "Foto sin nombre";
-  $("#d-etiquetas").replaceChildren(...(f.etiquetas || []).map((e) =>
-    h("button", { className: "chip", textContent: e, onclick: () => { $("#dialogo").close(); buscar(e); } })));
+  $("#d-etiquetas").replaceChildren(
+    ...(f.personas || []).map((id) =>
+      h("button", { className: "chip activo", textContent: `👤 ${nombrePersona(id)}`, onclick: () => { $("#dialogo").close(); buscar("", id); } })),
+    ...(f.etiquetas || []).map((e) =>
+      h("button", { className: "chip", textContent: e, onclick: () => { $("#dialogo").close(); buscar(e); } })));
 
   const filas = [
     ["Tomada", f.fecha_toma ? fmtFecha(f.fecha_toma) : "Sin fecha en la foto"],
@@ -251,7 +316,7 @@ async function abrir(id) {
       $("#dialogo").close();
       estado.fotos = estado.fotos.filter((x) => x.id !== id);
       pintar();
-      cargarEtiquetas();
+      cargarEtiquetas(); cargarPersonas().catch(() => {});
     } catch (e) { aviso(e.message); }
   };
   $("#dialogo").showModal();

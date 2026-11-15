@@ -389,3 +389,75 @@ def test_busqueda_por_significado(aws, traductor, monkeypatch):
 
         br.add_client_error("invoke_model", "ThrottlingException")
         assert [f["id"] for f in llamar("GET /fotos", params={"q": "gato"})[1]["fotos"]] == [gato]  # quedan las exactas
+
+
+CARA = {"Width": 0.2, "Height": 0.3, "Left": 0.4, "Top": 0.1}
+
+
+def caras_indexadas(*ids):
+    return {"FaceRecords": [{"Face": {"FaceId": i, "BoundingBox": CARA, "ImageId": "x", "Confidence": 99.9}, "FaceDetail": {}} for i in ids],
+            "FaceModelVersion": "7.0", "UnindexedFaces": []}
+
+
+def asociada(cara):
+    return {"AssociatedFaces": [{"FaceId": cara}], "UnsuccessfulFaceAssociations": [], "UserStatus": "UPDATING"}
+
+
+@pytest.fixture
+def caras():
+    with Stubber(guardar.rekognition) as g, Stubber(api.rekognition) as a:
+        yield g, a
+
+
+def test_personas_solo_con_consentimiento(aws, traductor, caras):
+    g, a = caras
+    coleccion = f"jyj-revela-caras-{USUARIO}"
+    sin_permiso, _ = subir_y_analizar(traductor)  # el Stubber falla si guardar llama a Rekognition
+    assert llamar("GET /personas")[1] == {"activo": False, "personas": []}
+
+    a.add_response("create_collection", {"StatusCode": 200}, {"CollectionId": coleccion})
+    assert llamar("PUT /personas")[1]["activo"] is True
+
+    # Primera foto: dos caras desconocidas → dos personas nuevas
+    g.add_response("index_faces", caras_indexadas("c1", "c2"))
+    for cara in ("c1", "c2"):
+        g.add_response("search_users", {"UserMatches": []}, {"CollectionId": coleccion, "FaceId": cara, "UserMatchThreshold": 90, "MaxUsers": 1})
+        g.add_response("create_user", {})
+        g.add_response("associate_faces", asociada(cara))
+    grupo, _ = subir_y_analizar(traductor)
+    juliana, otro = llamar("GET /fotos/{id}", foto=grupo)[1]["personas"]
+
+    # Segunda foto: la misma cara de la primera persona
+    g.add_response("index_faces", caras_indexadas("c3"))
+    g.add_response("search_users", {"UserMatches": [{"Similarity": 98.0, "User": {"UserId": juliana, "UserStatus": "ACTIVE"}}]})
+    g.add_response("associate_faces", asociada("c3"), {"CollectionId": coleccion, "UserId": juliana, "FaceIds": ["c3"], "UserMatchThreshold": 90})
+    sola, _ = subir_y_analizar(traductor)
+    g.assert_no_pending_responses()
+
+    lista = llamar("GET /personas")[1]["personas"]
+    assert [(p["id"], p["fotos"]) for p in lista] == [(juliana, 2), (otro, 1)]
+    assert lista[0]["portada"]["caja"] == CARA
+    assert any(f"miniaturas/{USUARIO}/{f}.jpg" in lista[0]["portada"]["miniatura"] for f in (grupo, sola))  # misma fecha de toma
+    assert {f["id"] for f in llamar("GET /fotos", params={"persona": juliana})[1]["fotos"]} == {grupo, sola}
+    assert llamar("GET /fotos", params={"persona": "../x"})[0] == 400
+
+    # Con nombre se encuentra al buscarlo
+    assert llamar("PUT /personas/{id}", {"nombre": "  Juliana   G. "}, foto=juliana)[1] == {"id": juliana, "nombre": "Juliana G."}
+    assert {f["id"] for f in llamar("GET /fotos", params={"q": "juliana g."})[1]["fotos"]} == {grupo, sola}
+    assert llamar("PUT /personas/{id}", {"nombre": "x" * 61}, foto=juliana)[0] == 400
+    assert llamar("PUT /personas/{id}", {"nombre": "Nadie"}, foto="b" * 32)[0] == 404
+
+    # Borrar una foto saca sus caras de la colección
+    a.add_response("delete_faces", {"DeletedFaces": ["c3"]}, {"CollectionId": coleccion, "FaceIds": ["c3"]})
+    llamar("DELETE /fotos/{id}", foto=sola)
+    assert [(p["id"], p["fotos"], p["nombre"]) for p in llamar("GET /personas")[1]["personas"]] == [(juliana, 1, "Juliana G."), (otro, 1, None)]
+
+    # Desactivar borra la colección y todo rastro en la tabla
+    a.add_response("delete_collection", {"StatusCode": 200}, {"CollectionId": coleccion})
+    assert llamar("DELETE /personas")[1] == {"activo": False, "personas": []}
+    a.assert_no_pending_responses()
+    tabla = boto3.resource("dynamodb").Table("revela-test")
+    assert not [i["SK"] for i in tabla.scan()["Items"] if i["SK"].startswith(("P#", "PERSONA#", "PERFIL"))]
+    det = llamar("GET /fotos/{id}", foto=grupo)[1]
+    assert det["personas"] is None and llamar("GET /fotos", params={"q": "perro"})[1]["fotos"][0]["id"] in {grupo, sin_permiso}
+    assert llamar("DELETE /fotos/{id}", foto=grupo)[0] == 204  # ya sin caras: no llama a Rekognition

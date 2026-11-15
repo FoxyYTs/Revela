@@ -40,7 +40,19 @@
   button.chip:hover, .chip.activo { color: var(--texto); border-color: var(--acento-2); }
   .chip b { color: var(--texto); font-weight: 500; }
 
-  .estado-busqueda { color: var(--suave); margin: 0 0 12px; }
+  .estado-busqueda { color: var(--suave); margin: 0 0 12px; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .personas { display: flex; gap: 14px; overflow-x: auto; scrollbar-width: none; margin-bottom: 14px; padding: 2px; }
+  .persona { flex: none; width: 72px; background: none; border: 0; padding: 0; color: var(--suave); font-size: 12px; text-align: center; }
+  .persona span:last-child { display: block; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .persona.activo, .persona:hover { color: var(--texto); }
+  .cara { position: relative; display: block; width: 64px; aspect-ratio: 1; margin: 0 auto; border-radius: 50%; overflow: hidden;
+          background: var(--panel); border: 2px solid var(--borde); }
+  .persona.activo .cara, .persona:hover .cara { border-color: var(--acento-2); }
+  .cara img { position: absolute; max-width: none; }
+  .consentimiento { padding: 24px; max-width: 560px; display: flex; flex-direction: column; gap: 12px; }
+  .consentimiento h3 { margin: 0; font: 600 22px Fraunces, serif; }
+  .consentimiento p, .consentimiento li { margin: 0; color: var(--suave); line-height: 1.5; }
+  .consentimiento ul { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
   .grilla { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
   .foto { position: relative; aspect-ratio: 1; border-radius: var(--radio); overflow: hidden; background: var(--panel);
           border: 1px solid var(--borde); padding: 0; }
@@ -157,6 +169,7 @@
       <input id="q" type="search" placeholder="Buscar: perro, un letrero, «gente comiendo en la playa»…" aria-label="Buscar fotos">
     </form>
     <button class="btn" id="btn-mapa" aria-pressed="false">🗺️ Mapa</button>
+    <button class="btn" id="btn-personas">👤 Personas</button>
     <label class="ubicacion" title="Si la foto no trae GPS (los celulares lo borran al compartir), se guarda dónde estabas al subirla">
       <input type="checkbox" id="usar-ubicacion"> Mi ubicación
     </label>
@@ -166,6 +179,7 @@
   </header>
   <main id="zona">
     <div id="vista-galeria">
+    <div class="personas" id="personas" aria-label="Personas en tus fotos"></div>
     <div class="chips" id="chips"></div>
     <p class="estado-busqueda oculto" id="estado-busqueda"></p>
     <div class="grilla" id="grilla"></div>
@@ -196,6 +210,24 @@
         <button class="btn peligro" id="d-borrar">Borrar</button>
         <button class="btn" id="d-cerrar" autofocus>Cerrar</button>
       </div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="dlg-personas" style="max-width:560px">
+  <div class="consentimiento">
+    <h3>Reconocer personas</h3>
+    <p id="p-estado"></p>
+    <ul>
+      <li>Revela usa Amazon Rekognition para guardar una huella de cada cara en las fotos que subas <b>desde que lo actives</b> y agrupar a la misma persona.</li>
+      <li>Las huellas son datos biométricos: van en una colección solo tuya y nunca se comparan con las fotos de otras cuentas.</li>
+      <li>Sube fotos solo de personas que estén de acuerdo.</li>
+      <li>Si lo desactivas se borran todas las huellas y los grupos; tus fotos se quedan.</li>
+    </ul>
+    <div class="acciones">
+      <button class="btn primario" id="p-activar">Activar</button>
+      <button class="btn peligro oculto" id="p-desactivar">Desactivar y borrar caras</button>
+      <button class="btn" id="p-cerrar">Cerrar</button>
     </div>
   </div>
 </dialog>

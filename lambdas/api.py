@@ -1,12 +1,17 @@
 """API de Revela detrás de API Gateway HTTP con autorizador JWT de Cognito.
 
 POST   /subidas       → URL prefirmada para subir una foto directo a S3
-GET    /fotos         → galería por fecha (?siguiente=cursor) o búsqueda (?q=perro), exacta y por significado
+GET    /fotos         → galería por fecha (?siguiente=cursor), búsqueda (?q=perro), exacta y por significado, o
+                        fotos de una persona (?persona=id)
 GET    /fotos/{id}    → detalle con la URL del original
 DELETE /fotos/{id}    → borra la foto, la miniatura y sus índices
 GET    /etiquetas     → etiquetas del usuario con cuántas fotos tiene cada una
 GET    /lugares       → fotos con ubicación, para el mapa
 GET    /mapa          → API key de Amazon Location (restringida a la web) para pintar el mapa
+GET    /personas      → si el reconocimiento está activo y las personas con su cara de portada
+PUT    /personas      → activa el reconocimiento de caras (consentimiento): crea la colección del usuario
+DELETE /personas      → lo desactiva y borra todos los datos biométricos (la colección entera)
+PUT    /personas/{id} → le pone nombre a una persona (vacío lo quita)
 """
 import base64
 import json
@@ -43,6 +48,8 @@ ESPERA_ANALISIS = timedelta(minutes=10)
 VECTORES = os.environ.get("VECTORES", "jyj-revela-vectores")
 EMBEDDINGS = "amazon.nova-2-multimodal-embeddings-v1:0"
 POR_SIGNIFICADO = 30
+CARAS = os.environ.get("CARAS", "jyj-revela-caras-")
+MAX_NOMBRE = 60
 # shortcut: umbral medido con una sola foto (relacionadas 0.38-0.70, ajenas 0.74-0.87); recalibrar con más fotos
 DISTANCIA_MAX = float(os.environ.get("DISTANCIA_MAX", "0.72"))
 
@@ -50,6 +57,7 @@ dynamo = boto3.resource("dynamodb")
 tabla = dynamo.Table(TABLA)
 s3 = boto3.client("s3", config=Config(signature_version="s3v4"))
 bedrock = boto3.client("bedrock-runtime")
+rekognition = boto3.client("rekognition")
 _clave_mapa = None
 _vectores = None
 
@@ -159,6 +167,11 @@ def crear_subida(usuario, cuerpo):
 
 def listar(usuario, params):
     pk = f"U#{usuario}"
+    if params.get("persona"):
+        if not re.fullmatch(r"[0-9a-f]{32}", params["persona"]):
+            raise ErrorCliente(400, "Persona inválida")
+        ids = [i["foto"] for i in consultar(pk, f"P#{params['persona']}#", ScanIndexForward=False)]
+        return 200, {"fotos": [resumen(i) for i in leer_fotos(pk, ids[:100]).values()], "siguiente": None}
     texto = params.get("q", "")[:200]
     q = normalizar(texto)
     if q:
@@ -192,9 +205,10 @@ def por_significado(usuario, texto):
 def buscar(usuario, q, texto):
     # shortcut: máximo 100 resultados exactos sin paginar; paginar si una búsqueda llega a ese tope
     pk, exactas = f"U#{usuario}", []
-    for prefijo in ("E#", "T#", "L#"):
-        r = tabla.query(KeyConditionExpression=Key("PK").eq(pk) & Key("SK").begins_with(f"{prefijo}{q}#"),
-                        ScanIndexForward=False, Limit=100)
+    prefijos = [f"{p}{q}#" for p in ("E#", "T#", "L#")]
+    prefijos += [f"P#{i['SK'][8:]}#" for i in consultar(pk, "PERSONA#") if normalizar(i["nombre"]) == q]  # por nombre
+    for prefijo in prefijos:
+        r = tabla.query(KeyConditionExpression=Key("PK").eq(pk) & Key("SK").begins_with(prefijo), ScanIndexForward=False, Limit=100)
         exactas += [i["foto"] for i in r["Items"] if i["foto"] not in exactas]
     exactas = exactas[:100]
     try:
@@ -202,17 +216,33 @@ def buscar(usuario, q, texto):
     except Exception as e:  # noqa: BLE001 — si Bedrock o S3 Vectors fallan quedan las coincidencias exactas
         log.warning("Búsqueda por significado falló: %s", type(e).__name__)
         parecidas = []
-    if not exactas and not parecidas:
-        return []
-    ids = (exactas + parecidas)[:100]  # tope de BatchGetItem
+    items = leer_fotos(pk, (exactas + parecidas)[:100])  # tope de BatchGetItem
+    # Primero las exactas por fecha, luego las parecidas por cercanía; un vector viejo de una foto en cuarentena no sale
+    fotos = sorted((resumen(items[i]) for i in exactas if i in items), key=lambda f: f["fecha"], reverse=True)
+    return fotos + [{**resumen(items[i]), "parecida": True} for i in parecidas if i in items and items[i]["estado"] == "LISTA"]
+
+
+def leer_fotos(pk, ids):
+    """{id: item} en el mismo orden de ids (máximo 100); las que ya no existen no aparecen."""
+    if not ids:
+        return {}
     items, pedido = {}, {TABLA: {"Keys": [{"PK": pk, "SK": f"F#{i}"} for i in ids]}}
     while pedido:  # DynamoDB puede devolver parte de las llaves sin leer si hay mucha carga
         r = dynamo.batch_get_item(RequestItems=pedido)
         items.update((i["SK"][2:], i) for i in r["Responses"][TABLA])
         pedido = r.get("UnprocessedKeys")
-    # Primero las exactas por fecha, luego las parecidas por cercanía; un vector viejo de una foto en cuarentena no sale
-    fotos = sorted((resumen(items[i]) for i in exactas if i in items), key=lambda f: f["fecha"], reverse=True)
-    return fotos + [{**resumen(items[i]), "parecida": True} for i in parecidas if i in items and items[i]["estado"] == "LISTA"]
+    return {i: items[i] for i in ids if i in items}
+
+
+def consultar(pk, prefijo, **extra):
+    """Todos los items de la partición del usuario cuyo SK empieza por prefijo, paginando."""
+    consulta = {"KeyConditionExpression": Key("PK").eq(pk) & Key("SK").begins_with(prefijo), **extra}
+    while True:
+        r = tabla.query(**consulta)
+        yield from r["Items"]
+        if "LastEvaluatedKey" not in r:
+            return
+        consulta["ExclusiveStartKey"] = r["LastEvaluatedKey"]
 
 
 def obtener(usuario, foto):
@@ -226,7 +256,7 @@ def detalle(usuario, foto):
     item = obtener(usuario, foto)
     datos = resumen(item)
     datos.update({k: item.get(k) for k in ("etiquetas", "texto", "descripcion", "camara", "gps", "gps_fuente", "lugar", "ancho", "alto",
-                                       "fecha_toma", "moderacion")})
+                                       "fecha_toma", "moderacion", "personas")})
     if item["estado"] == "LISTA":
         datos["original"] = firmar(item.get("revisada", item["original"]))  # las de antes de fotos/ no tienen copia
     return 200, datos
@@ -236,6 +266,11 @@ def borrar(usuario, foto):
     item = obtener(usuario, foto)
     pk = f"U#{usuario}"
     vectores().delete_vectors(vectorBucketName=VECTORES, indexName="fotos", keys=[foto])  # primero: si falla, no queda nada a medias
+    if item.get("caras"):
+        try:
+            rekognition.delete_faces(CollectionId=CARAS + usuario, FaceIds=item["caras"])
+        except rekognition.exceptions.ResourceNotFoundException:
+            pass  # ya desactivó personas: la colección se borró con todas sus caras
     s3.delete_objects(Bucket=BUCKET, Delete={"Objects": [{"Key": k} for k in (item["original"], item.get("revisada"), item.get("miniatura")) if k]})
     with tabla.batch_writer() as lote:
         for sk in item.get("claves", []):
@@ -245,15 +280,9 @@ def borrar(usuario, foto):
 
 
 def etiquetas(usuario):
-    conteo, consulta = {}, {"KeyConditionExpression": Key("PK").eq(f"U#{usuario}") & Key("SK").begins_with("E#"),
-                            "ProjectionExpression": "foto, etiqueta"}
-    while True:
-        r = tabla.query(**consulta)
-        for i in r["Items"]:
-            conteo.setdefault(i["etiqueta"], set()).add(i["foto"])
-        if "LastEvaluatedKey" not in r:
-            break
-        consulta["ExclusiveStartKey"] = r["LastEvaluatedKey"]
+    conteo = {}
+    for i in consultar(f"U#{usuario}", "E#", ProjectionExpression="foto, etiqueta"):
+        conteo.setdefault(i["etiqueta"], set()).add(i["foto"])
     lista = sorted(({"etiqueta": e, "fotos": len(f)} for e, f in conteo.items()), key=lambda x: (-x["fotos"], x["etiqueta"]))
     return 200, {"etiquetas": lista}
 
@@ -273,6 +302,64 @@ def lugares(usuario):
     return 200, {"fotos": fotos[:MAX_LUGARES]}
 
 
+def personas(usuario):
+    pk = f"U#{usuario}"
+    activo = bool(tabla.get_item(Key={"PK": pk, "SK": "PERFIL"}).get("Item", {}).get("personas"))
+    nombres = {i["SK"][8:]: i["nombre"] for i in consultar(pk, "PERSONA#")}
+    grupos = {}
+    # De la más reciente a la más vieja: la portada es la última foto de cada persona
+    for i in consultar(pk, "P#", ScanIndexForward=False, ProjectionExpression="foto, persona, caja"):
+        if i["persona"] not in grupos:
+            grupos[i["persona"]] = {"id": i["persona"], "nombre": nombres.get(i["persona"]), "fotos": set(),
+                                    "portada": {"miniatura": firmar(f"miniaturas/{usuario}/{i['foto']}.jpg"), "caja": i["caja"]}}
+        grupos[i["persona"]]["fotos"].add(i["foto"])
+    lista = sorted(({**g, "fotos": len(g["fotos"])} for g in grupos.values()), key=lambda g: (-g["fotos"], g["nombre"] or "~"))
+    return 200, {"activo": activo, "personas": lista}
+
+
+def activar_personas(usuario):
+    try:
+        rekognition.create_collection(CollectionId=CARAS + usuario)
+    except rekognition.exceptions.ResourceAlreadyExistsException:
+        pass
+    tabla.put_item(Item={"PK": f"U#{usuario}", "SK": "PERFIL", "personas": True,
+                         "consentimiento": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")})
+    return personas(usuario)
+
+
+def desactivar_personas(usuario):
+    # Primero la colección (las huellas de las caras); lo demás son ids y cajas que sin ella no identifican a nadie
+    pk = f"U#{usuario}"
+    tabla.delete_item(Key={"PK": pk, "SK": "PERFIL"})
+    try:
+        rekognition.delete_collection(CollectionId=CARAS + usuario)
+    except rekognition.exceptions.ResourceNotFoundException:
+        pass
+    with tabla.batch_writer() as lote:
+        for prefijo in ("P#", "PERSONA#"):
+            for i in consultar(pk, prefijo, ProjectionExpression="SK"):
+                lote.delete_item(Key={"PK": pk, "SK": i["SK"]})
+    # shortcut: recorre toda la galería; un índice disperso por "caras" si las galerías crecen mucho
+    for i in consultar(pk, "F#", FilterExpression="attribute_exists(caras)", ProjectionExpression="SK, claves"):
+        tabla.update_item(Key={"PK": pk, "SK": i["SK"]}, UpdateExpression="SET claves = :cl REMOVE personas, caras",
+                          ExpressionAttributeValues={":cl": [c for c in i.get("claves", []) if not c.startswith("P#")]})
+    return personas(usuario)
+
+
+def nombrar(usuario, persona, cuerpo):
+    pk = f"U#{usuario}"
+    nombre = " ".join(str(cuerpo.get("nombre", "")).split())
+    if len(nombre) > MAX_NOMBRE:
+        raise ErrorCliente(400, f"El nombre puede tener hasta {MAX_NOMBRE} caracteres")
+    if not tabla.query(KeyConditionExpression=Key("PK").eq(pk) & Key("SK").begins_with(f"P#{persona}#"), Limit=1)["Items"]:
+        raise ErrorCliente(404, "La persona no existe")
+    if nombre:
+        tabla.put_item(Item={"PK": pk, "SK": f"PERSONA#{persona}", "nombre": nombre})
+    else:
+        tabla.delete_item(Key={"PK": pk, "SK": f"PERSONA#{persona}"})
+    return 200, {"id": persona, "nombre": nombre or None}
+
+
 def mapa():
     # La key es pública por diseño (va al navegador) pero solo sirve para mosaicos y desde el dominio de la web
     global _clave_mapa
@@ -285,18 +372,20 @@ def lambda_handler(event, _context):
     usuario = event["requestContext"]["authorizer"]["jwt"]["claims"]["sub"]
     ruta = event["routeKey"]
     params = event.get("queryStringParameters") or {}
-    foto = (event.get("pathParameters") or {}).get("id", "")
+    foto = (event.get("pathParameters") or {}).get("id", "")  # id de la foto o de la persona, según la ruta
     try:
         if foto and not re.fullmatch(r"[0-9a-f]{32}", foto):
-            raise ErrorCliente(404, "La foto no existe")
-        if ruta == "POST /subidas":
-            cuerpo = event.get("body") or "{}"
-            if event.get("isBase64Encoded"):
-                cuerpo = base64.b64decode(cuerpo)
+            raise ErrorCliente(404, "No existe")
+        cuerpo = {}
+        if event.get("body"):
+            cuerpo = base64.b64decode(event["body"]) if event.get("isBase64Encoded") else event["body"]
             try:
                 cuerpo = json.loads(cuerpo)
             except ValueError:
                 raise ErrorCliente(400, "JSON inválido") from None
+            if not isinstance(cuerpo, dict):
+                raise ErrorCliente(400, "JSON inválido")
+        if ruta == "POST /subidas":
             return responder(*crear_subida(usuario, cuerpo))
         if ruta == "GET /fotos":
             return responder(*listar(usuario, params))
@@ -310,6 +399,14 @@ def lambda_handler(event, _context):
             return responder(*lugares(usuario))
         if ruta == "GET /mapa":
             return responder(*mapa())
+        if ruta == "GET /personas":
+            return responder(*personas(usuario))
+        if ruta == "PUT /personas":
+            return responder(*activar_personas(usuario))
+        if ruta == "DELETE /personas":
+            return responder(*desactivar_personas(usuario))
+        if ruta == "PUT /personas/{id}":
+            return responder(*nombrar(usuario, foto, cuerpo))
         raise ErrorCliente(404, "Ruta no encontrada")
     except ErrorCliente as e:
         return responder(e.status, {"error": str(e)})

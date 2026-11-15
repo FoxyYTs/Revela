@@ -16,6 +16,7 @@ Navegador ──Cognito (login)──► API Gateway HTTP (JWT) ──► Lambda
                                                                           4. Lambda guardar (Nova Lite: pie de foto + traducción;
                                                                              Amazon Location: dirección del GPS) ──► DynamoDB
                                                                              Nova Multimodal Embeddings ──► S3 Vectors
+                                                                             Rekognition IndexFaces + Users (si activó personas)
 Web: S3 privado ◄── CloudFront + OAC          Mapa: MapLibre + mosaicos de Amazon Location (API key solo para la web)
 ```
 
@@ -23,7 +24,7 @@ Web: S3 privado ◄── CloudFront + OAC          Mapa: MapLibre + mosaicos de
 |---|---|
 | `lambdas/` | `api.py`, `procesar.py`, `guardar.py` y `test_flujo.py` (moto) |
 | `web/` | `index.html` + `app.js`, sin build; la configuración llega en `config.js` (la escribe Terraform) |
-| `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web` (54 recursos) |
+| `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web` (58 recursos) |
 | `scripts/capa_pillow.sh` | Construye la capa de Pillow; Terraform la llama solo |
 
 ## Pruebas
@@ -64,6 +65,13 @@ Destruir: `terraform destroy` (los buckets tienen `force_destroy`).
   y pide las 30 más cercanas del usuario con distancia coseno ≤ 0,72 (medido: "aula con tablero" 0,38 contra una foto
   de un salón, "perro en la playa" 0,87). Primero van las coincidencias exactas por etiqueta, texto o lugar, después
   las parecidas. Si Bedrock o S3 Vectors fallan, quedan solo las exactas.
+- Personas (opcional, datos biométricos): solo para quien lo activa en "👤 Personas", que explica qué se guarda.
+  La API crea una colección de Rekognition **por usuario** (`jyj-revela-caras-<sub>`), así una cara nunca se compara
+  con fotos de otra cuenta. `guardar` indexa las caras de las fotos nuevas y las agrupa con Rekognition Users
+  (`SearchUsers` ≥ 90 %: persona conocida → `AssociateFaces`, si no `CreateUser`). En DynamoDB queda el índice
+  `P#<persona>#<fecha>` con la caja de la cara (la portada se recorta en el navegador) y `PERSONA#<id>` con el nombre.
+  Desactivar borra la colección y esos registros. Las colecciones no son de Terraform: después de la exposición
+  correr `scripts/borrar_caras.sh`.
 - Concurrencia de Lambda de la cuenta = 10 compartida: Step Functions reintenta con espera si se llena.
 - Cada foto se analiza una sola vez (paso `Reclamar`, escritura condicional en DynamoDB) y `procesar` copia a `fotos/`
   los bytes que leyó: Rekognition y la app usan esa copia, así que reusar la URL de subida no repite el gasto

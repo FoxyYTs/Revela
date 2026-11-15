@@ -64,6 +64,8 @@ data "aws_iam_policy_document" "assume_lambda" {
   }
 }
 
+data "aws_caller_identity" "actual" {}
+
 resource "aws_iam_role" "api" {
   name               = "${var.prefijo}-api-role"
   assume_role_policy = data.aws_iam_policy_document.assume_lambda.json
@@ -92,6 +94,8 @@ resource "aws_iam_role_policy" "api" {
       # Buscar por significado: vector del texto con Nova y consulta filtrada por usuario (el filtro exige GetVectors)
       { Effect = "Allow", Action = "bedrock:InvokeModel", Resource = "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-multimodal-embeddings-v1:0" },
       { Effect = "Allow", Action = ["s3vectors:QueryVectors", "s3vectors:GetVectors", "s3vectors:DeleteVectors"], Resource = var.indice_arn },
+      # Personas: una colección por usuario que se crea al dar el consentimiento y se borra al retirarlo
+      { Effect = "Allow", Action = ["rekognition:CreateCollection", "rekognition:DeleteCollection", "rekognition:DeleteFaces"], Resource = "arn:aws:rekognition:us-east-1:${data.aws_caller_identity.actual.account_id}:collection/${var.prefijo}-caras-*" },
     ]
   })
 }
@@ -118,6 +122,7 @@ resource "aws_lambda_function" "api" {
       SUBIDAS_DIA = "50"
       MAPA_KEY    = var.mapa_key
       VECTORES    = var.vectores
+      CARAS       = "${var.prefijo}-caras-"
     }
   }
 
@@ -130,7 +135,7 @@ resource "aws_apigatewayv2_api" "this" {
 
   cors_configuration {
     allow_origins = var.origenes
-    allow_methods = ["GET", "POST", "DELETE"]
+    allow_methods = ["GET", "POST", "PUT", "DELETE"]
     allow_headers = ["authorization", "content-type"]
     max_age       = 3600
   }
@@ -157,7 +162,8 @@ resource "aws_apigatewayv2_integration" "api" {
 }
 
 resource "aws_apigatewayv2_route" "rutas" {
-  for_each           = toset(["POST /subidas", "GET /fotos", "GET /fotos/{id}", "DELETE /fotos/{id}", "GET /etiquetas", "GET /lugares", "GET /mapa"])
+  for_each = toset(["POST /subidas", "GET /fotos", "GET /fotos/{id}", "DELETE /fotos/{id}", "GET /etiquetas", "GET /lugares", "GET /mapa",
+  "GET /personas", "PUT /personas", "DELETE /personas", "PUT /personas/{id}"])
   api_id             = aws_apigatewayv2_api.this.id
   route_key          = each.value
   target             = "integrations/${aws_apigatewayv2_integration.api.id}"

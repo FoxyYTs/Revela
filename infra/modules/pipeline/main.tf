@@ -175,6 +175,13 @@ resource "aws_iam_role_policy" "guardar" {
       { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:BatchWriteItem"], Resource = var.tabla_arn },
       { Effect = "Allow", Action = "s3:DeleteObject", Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*"] },
       { Effect = "Allow", Action = "s3:GetObject", Resource = "${var.bucket_arn}/miniaturas/*" }, # Nova describe la miniatura
+      # Personas (solo usuarios que lo activaron): Rekognition lee fotos/ con los permisos de este rol
+      { Effect = "Allow", Action = "s3:GetObject", Resource = "${var.bucket_arn}/fotos/*" },
+      {
+        Effect   = "Allow"
+        Action   = ["rekognition:IndexFaces", "rekognition:DeleteFaces", "rekognition:SearchUsers", "rekognition:CreateUser", "rekognition:AssociateFaces"]
+        Resource = "arn:aws:rekognition:us-east-1:${data.aws_caller_identity.actual.account_id}:collection/${var.prefijo}-caras-*"
+      },
       { Effect = "Allow", Action = "geo-places:ReverseGeocode", Resource = "arn:aws:geo-places:us-east-1::provider/default" },
       {
         Effect = "Allow"
@@ -202,7 +209,7 @@ resource "aws_lambda_function" "guardar" {
   handler          = "guardar.lambda_handler"
   filename         = var.zip
   source_code_hash = var.zip_hash
-  timeout          = 30
+  timeout          = 60 # Nova + hasta 10 caras con 3 llamadas a Rekognition cada una
   memory_size      = 256
 
   environment {
@@ -211,6 +218,7 @@ resource "aws_lambda_function" "guardar" {
       UMBRAL_MODERACION = "80"
       MODELO            = "us.${local.modelo}"
       VECTORES          = var.vectores
+      CARAS             = "${var.prefijo}-caras-"
     }
   }
 
