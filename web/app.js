@@ -143,7 +143,7 @@ $("#btn-salir").onclick = async () => {
 
 // ---------- Galería ----------
 
-const estado = { q: "", persona: null, eligiendo: false, siguiente: null, fotos: [], sondeo: null, cargada: 0, personas: { activo: false, personas: [] } };
+const estado = { q: "", persona: null, eligiendo: false, uniendo: false, siguiente: null, fotos: [], sondeo: null, cargada: 0, personas: { activo: false, personas: [] } };
 
 function entrar() {
   estado.persona = null;  // otra cuenta pudo dejar un filtro puesto
@@ -181,7 +181,7 @@ function buscar(q, persona = null) {
   $("#q").value = q;
   estado.q = q.trim();
   estado.persona = persona;
-  estado.eligiendo = false;
+  estado.eligiendo = estado.uniendo = false;
   cargar();
 }
 
@@ -206,7 +206,7 @@ async function cargarPersonas() {
   estado.personas = await api("GET", "/personas");
   $("#personas").replaceChildren(...estado.personas.personas.map((p) =>
     h("button", { className: "persona" + (estado.persona === p.id ? " activo" : ""), title: `${p.fotos} foto(s)`,
-                  onclick: () => buscar("", estado.persona === p.id ? null : p.id) },
+                  onclick: () => estado.uniendo ? unir(p) : buscar("", estado.persona === p.id ? null : p.id) },
       cara(p), h("span", { textContent: p.nombre || "Sin nombre" }))));
   $("#personas").classList.toggle("oculto", !estado.personas.personas.length);
 }
@@ -215,6 +215,15 @@ async function nombrar() {
   const nombre = prompt("¿Cómo se llama esta persona?", estado.personas.personas.find((p) => p.id === estado.persona)?.nombre || "");
   if (nombre === null) return;
   try { await api("PUT", `/personas/${estado.persona}`, { nombre }); await cargarPersonas(); pintar(); } catch (e) { aviso(e.message); }
+}
+
+async function unir(otra) {
+  estado.uniendo = false;
+  if (otra.id !== estado.persona &&
+      confirm(`¿${otra.nombre || "Esa persona"} y ${nombrePersona(estado.persona)} son la misma? Sus fotos quedan juntas y las nuevas se reconocen como una sola.`)) {
+    try { await api("POST", `/personas/${estado.persona}/unir`, { persona: otra.id }); await cargarPersonas(); return cargar(); } catch (e) { aviso(e.message); }
+  }
+  pintar();
 }
 
 async function elegirPortada(foto) {
@@ -260,6 +269,7 @@ function tarjeta(f) {
 
 function pintar() {
   $("#grilla").classList.toggle("eligiendo", estado.eligiendo);
+  $("#personas").classList.toggle("eligiendo", estado.uniendo);
   $("#grilla").replaceChildren(...estado.fotos.map(tarjeta));
   $("#vacio").classList.toggle("oculto", estado.fotos.length > 0 || !!estado.q || !!estado.persona);
   $("#btn-mas").classList.toggle("oculto", !estado.siguiente);
@@ -267,11 +277,13 @@ function pintar() {
   eb.classList.toggle("oculto", !estado.q && !estado.persona);
   const parecidas = estado.fotos.filter((f) => f.parecida).length;
   if (estado.persona) {
-    eb.replaceChildren(...(estado.eligiendo
-      ? ["Toca la foto que quieres de portada", h("button", { className: "chip", textContent: "Cancelar", onclick: () => { estado.eligiendo = false; pintar(); } })]
+    const cancelar = h("button", { className: "chip", textContent: "Cancelar", onclick: () => { estado.eligiendo = estado.uniendo = false; pintar(); } });
+    eb.replaceChildren(...(estado.eligiendo ? ["Toca la foto que quieres de portada", cancelar]
+      : estado.uniendo ? ["Toca arriba, en la fila de caras, a la otra persona", cancelar]
       : [`${estado.fotos.length} foto(s) de ${nombrePersona(estado.persona)}`,
          h("button", { className: "chip", textContent: "✏️ Ponerle nombre", onclick: nombrar }),
          h("button", { className: "chip", textContent: "🖼️ Elegir portada", onclick: () => { estado.eligiendo = true; pintar(); } }),
+         h("button", { className: "chip", textContent: "🔗 Unir con…", onclick: () => { estado.uniendo = true; pintar(); } }),
          h("button", { className: "chip", textContent: "✕ Ver todas", onclick: () => buscar("") })]));
   } else {
     eb.textContent = estado.q ? `${estado.fotos.length} foto(s) para “${estado.q}”` + (parecidas ? ` · ${parecidas} por parecido` : "") : "";

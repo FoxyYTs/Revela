@@ -70,7 +70,8 @@ Destruir: `terraform destroy` (los buckets tienen `force_destroy`).
   con fotos de otra cuenta. `guardar` indexa las caras de las fotos nuevas y las agrupa con Rekognition Users
   (`SearchUsers` ≥ 90 %: persona conocida → `AssociateFaces`, si no `CreateUser`). En DynamoDB queda el índice
   `P#<persona>#<fecha>` con la caja de la cara (la portada se recorta en el navegador) y `PERSONA#<id>` con el nombre.
-  La portada de cada persona se puede elegir entre sus fotos. "🔄 Buscar caras" en el detalle repite la búsqueda
+  La portada de cada persona se puede elegir entre sus fotos, y dos personas que Rekognition separó (una foto
+  editada, otra edad) se unen: sus caras pasan al mismo usuario de Rekognition (`AssociateFaces` con umbral 0). "🔄 Buscar caras" en el detalle repite la búsqueda
   con `QualityFilter=LOW` (caras pequeñas o borrosas, o fotos subidas antes de activar). La lógica está en
   `lambdas/caras.py`, compartida por `guardar` y la API. Desactivar borra la colección y esos registros. Las colecciones no son de Terraform: después de la exposición
   correr `scripts/borrar_caras.sh`.

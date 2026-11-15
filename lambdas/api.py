@@ -12,6 +12,7 @@ GET    /personas      → si el reconocimiento está activo y las personas con s
 PUT    /personas      → activa el reconocimiento de caras (consentimiento): crea la colección del usuario
 DELETE /personas      → lo desactiva y borra todos los datos biométricos (la colección entera)
 PUT    /personas/{id} → nombre (vacío lo quita) y/o foto de portada de una persona
+POST   /personas/{id}/unir → {"persona": otra}: la otra persona pasa a ser esta (Rekognition la confundió con dos)
 POST   /fotos/{id}/caras → vuelve a buscar caras en una foto con un filtro de calidad más permisivo
 """
 import base64
@@ -377,6 +378,44 @@ def editar_persona(usuario, persona, cuerpo):
     return 200, {"id": persona, "nombre": r["Attributes"].get("nombre"), "portada": r["Attributes"].get("portada")}
 
 
+def unir_personas(usuario, persona, cuerpo):
+    pk, otra = f"U#{usuario}", cuerpo.get("persona")
+    if not isinstance(otra, str) or not re.fullmatch(r"[0-9a-f]{32}", otra) or otra == persona:
+        raise ErrorCliente(400, "Elige otra persona")
+    indices = list(consultar(pk, f"P#{otra}#"))
+    if not indices or not tabla.query(KeyConditionExpression=Key("PK").eq(pk) & Key("SK").begins_with(f"P#{persona}#"), Limit=1)["Items"]:
+        raise ErrorCliente(404, "La persona no existe")
+
+    # Rekognition: las caras de la otra pasan a esta, para que las fotos nuevas de cualquiera de las dos caigan aquí.
+    # Umbral 0: el usuario ya decidió que son la misma, aunque Rekognition no las vea parecidas
+    coleccion = rostros.CARAS + usuario
+    caras = [c["FaceId"] for pagina in rekognition.get_paginator("list_faces").paginate(CollectionId=coleccion, UserId=otra)
+             for c in pagina["Faces"]]
+    for i in range(0, len(caras), 100):
+        rekognition.disassociate_faces(CollectionId=coleccion, UserId=otra, FaceIds=caras[i:i + 100])
+        rekognition.associate_faces(CollectionId=coleccion, UserId=persona, FaceIds=caras[i:i + 100], UserMatchThreshold=0)
+    rekognition.delete_user(CollectionId=coleccion, UserId=otra)
+
+    # DynamoDB: el índice P# y las fotos cambian de persona; el nombre de la otra sirve si esta no tiene
+    with tabla.batch_writer(overwrite_by_pkeys=["PK", "SK"]) as lote:
+        for i in indices:
+            nueva = f"P#{persona}#" + i["SK"].split("#", 2)[2]
+            lote.put_item(Item={**i, "SK": nueva, "persona": persona})
+            lote.delete_item(Key={"PK": pk, "SK": i["SK"]})
+    for foto in {i["foto"] for i in indices}:
+        item = tabla.get_item(Key={"PK": pk, "SK": f"F#{foto}"}).get("Item")
+        if item:
+            tabla.update_item(Key={"PK": pk, "SK": item["SK"]}, UpdateExpression="SET personas = :pe, claves = :cl", ExpressionAttributeValues={
+                ":pe": list(dict.fromkeys(persona if p == otra else p for p in item.get("personas", []))),
+                ":cl": list(dict.fromkeys(c.replace(f"P#{otra}#", f"P#{persona}#", 1) for c in item.get("claves", [])))})
+    datos_otra = tabla.get_item(Key={"PK": pk, "SK": f"PERSONA#{otra}"}).get("Item", {})
+    if datos_otra.get("nombre"):
+        tabla.update_item(Key={"PK": pk, "SK": f"PERSONA#{persona}"}, UpdateExpression="SET nombre = if_not_exists(nombre, :n)",
+                          ExpressionAttributeValues={":n": datos_otra["nombre"]})
+    tabla.delete_item(Key={"PK": pk, "SK": f"PERSONA#{otra}"})
+    return personas(usuario)
+
+
 def buscar_caras(usuario, foto):
     """Otra pasada sobre una foto (subida antes de activar Personas, o con caras pequeñas o borrosas que el filtro
     automático descartó): reemplaza sus caras y su índice por persona."""
@@ -451,6 +490,8 @@ def lambda_handler(event, _context):
             return responder(*desactivar_personas(usuario))
         if ruta == "PUT /personas/{id}":
             return responder(*editar_persona(usuario, foto, cuerpo))
+        if ruta == "POST /personas/{id}/unir":
+            return responder(*unir_personas(usuario, foto, cuerpo))
         if ruta == "POST /fotos/{id}/caras":
             return responder(*buscar_caras(usuario, foto))
         raise ErrorCliente(404, "Ruta no encontrada")

@@ -544,3 +544,41 @@ def test_portada_y_volver_a_buscar_caras(aws, traductor, caras, monkeypatch):
     status, r = llamar("POST /fotos/{id}/caras", foto=antes)
     assert status == 429 and "búsquedas de caras" in r["error"]
     assert llamar("POST /subidas", {"tipo": "image/jpeg"})[0] == 201
+
+
+def test_unir_dos_personas(aws, traductor, caras):
+    s, _ = caras
+    coleccion = f"jyj-revela-caras-{USUARIO}"
+    s.add_response("create_collection", {"StatusCode": 200})
+    llamar("PUT /personas")
+    ids = []
+    for cara in ("c1", "c2"):  # la misma persona, pero Rekognition no las ve parecidas (una foto editada)
+        s.add_response("index_faces", caras_indexadas(cara))
+        s.add_response("search_users", {"UserMatches": []})
+        s.add_response("create_user", {})
+        s.add_response("associate_faces", asociada(cara))
+        ids.append(subir_y_analizar(traductor)[0])
+    lista = llamar("GET /personas")[1]["personas"]
+    queda = next(p["id"] for p in lista if p["portada"]["foto"] == ids[0])
+    sale = next(p["id"] for p in lista if p["id"] != queda)
+    llamar("PUT /personas/{id}", {"nombre": "Juliana"}, foto=sale)
+
+    assert llamar("POST /personas/{id}/unir", {"persona": queda}, foto=queda)[0] == 400
+    assert llamar("POST /personas/{id}/unir", {"persona": "c" * 32}, foto=queda)[0] == 404
+
+    s.add_response("list_faces", {"Faces": [{"FaceId": "c2"}]}, {"CollectionId": coleccion, "UserId": sale})
+    s.add_response("disassociate_faces", {"DisassociatedFaces": [{"FaceId": "c2"}], "UnsuccessfulFaceDisassociations": []},
+                   {"CollectionId": coleccion, "UserId": sale, "FaceIds": ["c2"]})
+    s.add_response("associate_faces", asociada("c2"), {"CollectionId": coleccion, "UserId": queda, "FaceIds": ["c2"], "UserMatchThreshold": 0})
+    s.add_response("delete_user", {}, {"CollectionId": coleccion, "UserId": sale})
+    lista = llamar("POST /personas/{id}/unir", {"persona": sale}, foto=queda)[1]["personas"]
+    s.assert_no_pending_responses()
+    assert [(p["id"], p["fotos"], p["nombre"]) for p in lista] == [(queda, 2, "Juliana")]  # hereda el nombre
+    assert llamar("GET /fotos/{id}", foto=ids[1])[1]["personas"] == [queda]
+    assert {f["id"] for f in llamar("GET /fotos", params={"persona": queda})[1]["fotos"]} == set(ids)
+    assert llamar("GET /fotos", params={"persona": sale})[1]["fotos"] == []
+
+    # Borrar la foto que venía de la otra persona limpia el índice nuevo (las claves de la foto se actualizaron)
+    s.add_response("delete_faces", {"DeletedFaces": ["c2"]})
+    llamar("DELETE /fotos/{id}", foto=ids[1])
+    assert [(p["id"], p["fotos"]) for p in llamar("GET /personas")[1]["personas"]] == [(queda, 1)]
