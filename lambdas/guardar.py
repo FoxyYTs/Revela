@@ -123,30 +123,43 @@ def vectorizar(foto, usuario, jpeg):
         log.warning("No se pudo vectorizar la foto %s: %s", foto, type(e).__name__)
 
 
-def reconocer(usuario, foto, bucket, key, viejas):
+def borrar_caras(usuario, caras):
+    try:
+        rekognition.delete_faces(CollectionId=CARAS + usuario, FaceIds=caras)
+    except rekognition.exceptions.ResourceNotFoundException:
+        pass  # desactivó personas: la colección ya se borró con todas sus caras
+
+
+def reconocer(usuario, foto, bucket, key):
     """Indexa las caras en la colección del usuario y las agrupa con Rekognition Users: una cara que se parece a una
     persona ya conocida se le asocia; si no, es una persona nueva. Devuelve ([(persona, caja)], [face_id])."""
     coleccion = CARAS + usuario
     try:
-        if viejas:  # reproceso: no duplicar las caras de la pasada anterior
-            rekognition.delete_faces(CollectionId=coleccion, FaceIds=viejas)
         r = rekognition.index_faces(CollectionId=coleccion, Image={"S3Object": {"Bucket": bucket, "Name": key}},
                                     ExternalImageId=foto, MaxFaces=MAX_CARAS, QualityFilter="AUTO")
     except rekognition.exceptions.ResourceNotFoundException:
         return [], []  # desactivó personas mientras se analizaba la foto
-    personas, caras = [], []
-    for registro in r["FaceRecords"]:
-        cara = registro["Face"]["FaceId"]
-        parecidas = rekognition.search_users(CollectionId=coleccion, FaceId=cara, UserMatchThreshold=UMBRAL_CARA, MaxUsers=1)["UserMatches"]
-        persona = parecidas[0]["User"]["UserId"] if parecidas else uuid.uuid4().hex
-        if not parecidas:
-            rekognition.create_user(CollectionId=coleccion, UserId=persona)
-        rekognition.associate_faces(CollectionId=coleccion, UserId=persona, FaceIds=[cara], UserMatchThreshold=UMBRAL_CARA)
-        # La caja ya viene corregida por la orientación EXIF, igual que la miniatura
-        caja = {k: Decimal(str(round(v, 4))) for k, v in registro["Face"]["BoundingBox"].items()}
-        personas.append((persona, caja))
-        caras.append(cara)
+    personas, caras = [], [c["Face"]["FaceId"] for c in r["FaceRecords"]]
+    try:
+        for registro in r["FaceRecords"]:
+            personas.append(agrupar(coleccion, registro))
+    except Exception:
+        borrar_caras(usuario, caras)  # sin el item que las referencia quedarían huellas huérfanas
+        raise
     return personas, caras
+
+
+def agrupar(coleccion, registro):
+    """Asocia la cara a la persona más parecida o crea una nueva; devuelve (persona, caja)."""
+    cara = registro["Face"]["FaceId"]
+    parecidas = rekognition.search_users(CollectionId=coleccion, FaceId=cara, UserMatchThreshold=UMBRAL_CARA, MaxUsers=1)["UserMatches"]
+    persona = parecidas[0]["User"]["UserId"] if parecidas else uuid.uuid4().hex
+    if not parecidas:
+        rekognition.create_user(CollectionId=coleccion, UserId=persona)
+    rekognition.associate_faces(CollectionId=coleccion, UserId=persona, FaceIds=[cara], UserMatchThreshold=UMBRAL_CARA)
+    # La caja ya viene corregida por la orientación EXIF, igual que la miniatura
+    caja = {k: Decimal(str(round(v, 4))) for k, v in registro["Face"]["BoundingBox"].items()}
+    return persona, caja
 
 
 def geocodificar(gps):
@@ -211,7 +224,7 @@ def lambda_handler(event, _context):
         vectorizar(foto, usuario, jpeg)
         # Datos biométricos: solo si el usuario dio su consentimiento en la página
         if tabla.get_item(Key={"PK": pk, "SK": "PERFIL"}).get("Item", {}).get("personas"):
-            personas, caras = reconocer(usuario, foto, event["bucket"], imagen["revisada"], actual.get("caras", []))
+            personas, caras = reconocer(usuario, foto, event["bucket"], imagen["revisada"])
 
     # GPS de la foto; si el celular lo borró, la ubicación que dio el navegador al subir
     gps = imagen.get("gps")
@@ -235,7 +248,10 @@ def lambda_handler(event, _context):
         for persona, caja in personas:
             claves.setdefault(f"P#{persona}#{fecha_orden}", {"persona": persona, "caja": caja})
 
-    # Si la foto se reprocesa (SQS entrega al menos una vez) se reemplazan los índices viejos
+    # Si la foto se reprocesa se reemplazan los índices viejos, y las caras viejas salen de la colección en cualquier
+    # caso (también si ahora quedó en cuarentena o se retiró el consentimiento)
+    if actual.get("caras"):
+        borrar_caras(usuario, actual["caras"])
     with tabla.batch_writer(overwrite_by_pkeys=["PK", "SK"]) as lote:
         for sk in set(actual.get("claves", [])) - set(claves):
             lote.delete_item(Key={"PK": pk, "SK": sk})

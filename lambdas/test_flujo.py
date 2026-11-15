@@ -461,3 +461,33 @@ def test_personas_solo_con_consentimiento(aws, traductor, caras):
     det = llamar("GET /fotos/{id}", foto=grupo)[1]
     assert det["personas"] is None and llamar("GET /fotos", params={"q": "perro"})[1]["fotos"][0]["id"] in {grupo, sin_permiso}
     assert llamar("DELETE /fotos/{id}", foto=grupo)[0] == 204  # ya sin caras: no llama a Rekognition
+
+
+def test_caras_no_quedan_huerfanas(aws, traductor, caras):
+    g, a = caras
+    coleccion = f"jyj-revela-caras-{USUARIO}"
+    a.add_response("create_collection", {"StatusCode": 200})
+    llamar("PUT /personas")
+    # Falla al agrupar: se borran las caras recién indexadas antes de propagar el error
+    g.add_response("index_faces", caras_indexadas("c1"))
+    g.add_client_error("search_users", "ThrottlingException")
+    g.add_response("delete_faces", {"DeletedFaces": ["c1"]}, {"CollectionId": coleccion, "FaceIds": ["c1"]})
+    with pytest.raises(guardar.rekognition.exceptions.ClientError):
+        subir_y_analizar(traductor)
+
+    # Reproceso que ahora cae en cuarentena: las caras de la pasada anterior salen de la colección
+    status, subida = llamar("POST /subidas", {"tipo": "image/jpeg"})
+    boto3.client("s3").put_object(Bucket="revela-test", Key=subida["campos"]["key"], Body=jpeg())
+    imagen = procesar.lambda_handler({"bucket": "revela-test", "key": subida["campos"]["key"]}, None)
+    evento = {"bucket": "revela-test", "key": imagen["revisada"], "etiquetas": PERRO, "imagen": imagen}
+    traductor.add_response("converse", respuesta_nova(nova(["Perro", "Playa"])))
+    traductor.add_response("invoke_model", respuesta_vector())
+    g.add_response("index_faces", caras_indexadas("c2"))
+    g.add_response("search_users", {"UserMatches": []})
+    g.add_response("create_user", {})
+    g.add_response("associate_faces", asociada("c2"))
+    guardar.lambda_handler(evento, None)
+    g.add_response("delete_faces", {"DeletedFaces": ["c2"]}, {"CollectionId": coleccion, "FaceIds": ["c2"]})
+    guardar.lambda_handler({**evento, "moderacion": [{"Name": "Explicit", "ParentName": "", "Confidence": 99.0}]}, None)
+    g.assert_no_pending_responses()
+    assert llamar("GET /fotos/{id}", foto=subida["foto"])[1]["personas"] == []
