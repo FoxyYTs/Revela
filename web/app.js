@@ -143,7 +143,7 @@ $("#btn-salir").onclick = async () => {
 
 // ---------- Galería ----------
 
-const estado = { q: "", persona: null, siguiente: null, fotos: [], sondeo: null, cargada: 0, personas: { activo: false, personas: [] } };
+const estado = { q: "", persona: null, eligiendo: false, siguiente: null, fotos: [], sondeo: null, cargada: 0, personas: { activo: false, personas: [] } };
 
 function entrar() {
   estado.persona = null;  // otra cuenta pudo dejar un filtro puesto
@@ -181,6 +181,7 @@ function buscar(q, persona = null) {
   $("#q").value = q;
   estado.q = q.trim();
   estado.persona = persona;
+  estado.eligiendo = false;
   cargar();
 }
 
@@ -216,6 +217,12 @@ async function nombrar() {
   try { await api("PUT", `/personas/${estado.persona}`, { nombre }); await cargarPersonas(); pintar(); } catch (e) { aviso(e.message); }
 }
 
+async function elegirPortada(foto) {
+  estado.eligiendo = false;
+  try { await api("PUT", `/personas/${estado.persona}`, { portada: foto }); await cargarPersonas(); } catch (e) { aviso(e.message); }
+  pintar();
+}
+
 function pintarConsentimiento() {
   const { activo } = estado.personas;
   $("#p-estado").textContent = activo ? "Está activado: las fotos nuevas se agrupan por persona." : "Está desactivado.";
@@ -248,10 +255,11 @@ function tarjeta(f) {
     CUARENTENA: () => [h("span", { className: "aviso", textContent: "🚫 Oculta por moderación" })],
     ERROR: () => [h("span", { className: "aviso", textContent: "⚠️ No se pudo analizar" })],
   }[f.estado]();
-  return h("button", { className: "foto", onclick: () => abrir(f.id), title: (f.parecida ? "Parecida a tu búsqueda · " : "") + (f.nombre || "") }, contenido);
+  return h("button", { className: "foto", onclick: () => estado.eligiendo ? elegirPortada(f.id) : abrir(f.id), title: (f.parecida ? "Parecida a tu búsqueda · " : "") + (f.nombre || "") }, contenido);
 }
 
 function pintar() {
+  $("#grilla").classList.toggle("eligiendo", estado.eligiendo);
   $("#grilla").replaceChildren(...estado.fotos.map(tarjeta));
   $("#vacio").classList.toggle("oculto", estado.fotos.length > 0 || !!estado.q || !!estado.persona);
   $("#btn-mas").classList.toggle("oculto", !estado.siguiente);
@@ -259,9 +267,12 @@ function pintar() {
   eb.classList.toggle("oculto", !estado.q && !estado.persona);
   const parecidas = estado.fotos.filter((f) => f.parecida).length;
   if (estado.persona) {
-    eb.replaceChildren(`${estado.fotos.length} foto(s) de ${nombrePersona(estado.persona)}`,
-      h("button", { className: "chip", textContent: "✏️ Ponerle nombre", onclick: nombrar }),
-      h("button", { className: "chip", textContent: "✕ Ver todas", onclick: () => buscar("") }));
+    eb.replaceChildren(...(estado.eligiendo
+      ? ["Toca la foto que quieres de portada", h("button", { className: "chip", textContent: "Cancelar", onclick: () => { estado.eligiendo = false; pintar(); } })]
+      : [`${estado.fotos.length} foto(s) de ${nombrePersona(estado.persona)}`,
+         h("button", { className: "chip", textContent: "✏️ Ponerle nombre", onclick: nombrar }),
+         h("button", { className: "chip", textContent: "🖼️ Elegir portada", onclick: () => { estado.eligiendo = true; pintar(); } }),
+         h("button", { className: "chip", textContent: "✕ Ver todas", onclick: () => buscar("") })]));
   } else {
     eb.textContent = estado.q ? `${estado.fotos.length} foto(s) para “${estado.q}”` + (parecidas ? ` · ${parecidas} por parecido` : "") : "";
   }
@@ -309,6 +320,19 @@ async function abrir(id) {
   $("#d-datos").replaceChildren(...filas.flatMap(([k, v]) => [h("dt", { textContent: k }), h("dd", { style: "margin:0" }, v)]));
   $("#d-texto").replaceChildren(...(f.texto ? [h("dt", { textContent: "Texto en la foto", style: "color:var(--suave);margin-bottom:4px" }), h("pre", { textContent: f.texto })] : []));
 
+  $("#d-caras").classList.toggle("oculto", !estado.personas.activo || f.estado !== "LISTA");
+  $("#d-caras").onclick = async () => {
+    $("#d-caras").disabled = true;
+    $("#d-caras").textContent = "Buscando…";
+    try {
+      const { personas } = await api("POST", `/fotos/${id}/caras`);
+      await cargarPersonas();
+      aviso(personas.length ? `Encontré ${personas.length} persona(s)` : "No encontré caras en esta foto");
+      $("#dialogo").close();
+      abrir(id);
+    } catch (e) { aviso(e.message); }
+    finally { $("#d-caras").disabled = false; $("#d-caras").textContent = "🔄 Buscar caras"; }
+  };
   $("#d-borrar").onclick = async () => {
     if (!confirm("¿Borrar esta foto para siempre?")) return;
     try {

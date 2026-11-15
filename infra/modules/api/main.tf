@@ -95,7 +95,7 @@ resource "aws_iam_role_policy" "api" {
       { Effect = "Allow", Action = "bedrock:InvokeModel", Resource = "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-multimodal-embeddings-v1:0" },
       { Effect = "Allow", Action = ["s3vectors:QueryVectors", "s3vectors:GetVectors", "s3vectors:DeleteVectors"], Resource = var.indice_arn },
       # Personas: una colección por usuario que se crea al dar el consentimiento y se borra al retirarlo
-      { Effect = "Allow", Action = ["rekognition:CreateCollection", "rekognition:DeleteCollection", "rekognition:DeleteFaces"], Resource = "arn:aws:rekognition:us-east-1:${data.aws_caller_identity.actual.account_id}:collection/${var.prefijo}-caras-*" },
+      { Effect = "Allow", Action = ["rekognition:CreateCollection", "rekognition:DeleteCollection", "rekognition:DeleteFaces", "rekognition:IndexFaces", "rekognition:SearchUsers", "rekognition:CreateUser", "rekognition:AssociateFaces"], Resource = "arn:aws:rekognition:us-east-1:${data.aws_caller_identity.actual.account_id}:collection/${var.prefijo}-caras-*" },
     ]
   })
 }
@@ -112,7 +112,7 @@ resource "aws_lambda_function" "api" {
   handler          = "api.lambda_handler"
   filename         = var.zip
   source_code_hash = var.zip_hash
-  timeout          = 10
+  timeout          = 29 # "Buscar caras" hace hasta 3 llamadas a Rekognition por cara; API Gateway corta a los 30 s
   memory_size      = 256
 
   environment {
@@ -163,7 +163,7 @@ resource "aws_apigatewayv2_integration" "api" {
 
 resource "aws_apigatewayv2_route" "rutas" {
   for_each = toset(["POST /subidas", "GET /fotos", "GET /fotos/{id}", "DELETE /fotos/{id}", "GET /etiquetas", "GET /lugares", "GET /mapa",
-  "GET /personas", "PUT /personas", "DELETE /personas", "PUT /personas/{id}"])
+  "GET /personas", "PUT /personas", "DELETE /personas", "PUT /personas/{id}", "POST /fotos/{id}/caras"])
   api_id             = aws_apigatewayv2_api.this.id
   route_key          = each.value
   target             = "integrations/${aws_apigatewayv2_integration.api.id}"

@@ -11,6 +11,7 @@ from botocore.stub import Stubber
 from PIL import ExifTags, Image, UnidentifiedImageError
 
 import api
+import caras as caras_mod
 import guardar
 import procesar
 
@@ -405,8 +406,9 @@ def asociada(cara):
 
 @pytest.fixture
 def caras():
-    with Stubber(guardar.rekognition) as g, Stubber(api.rekognition) as a:
-        yield g, a
+    # guardar y la API comparten el cliente de caras.py: un solo Stubber, las respuestas van en el orden de las llamadas
+    with Stubber(caras_mod.rekognition) as s:
+        yield s, s
 
 
 def test_personas_solo_con_consentimiento(aws, traductor, caras):
@@ -442,7 +444,7 @@ def test_personas_solo_con_consentimiento(aws, traductor, caras):
     assert llamar("GET /fotos", params={"persona": "../x"})[0] == 400
 
     # Con nombre se encuentra al buscarlo
-    assert llamar("PUT /personas/{id}", {"nombre": "  Juliana   G. "}, foto=juliana)[1] == {"id": juliana, "nombre": "Juliana G."}
+    assert llamar("PUT /personas/{id}", {"nombre": "  Juliana   G. "}, foto=juliana)[1] == {"id": juliana, "nombre": "Juliana G.", "portada": None}
     assert {f["id"] for f in llamar("GET /fotos", params={"q": "juliana g."})[1]["fotos"]} == {grupo, sola}
     assert llamar("PUT /personas/{id}", {"nombre": "x" * 61}, foto=juliana)[0] == 400
     assert llamar("PUT /personas/{id}", {"nombre": "Nadie"}, foto="b" * 32)[0] == 404
@@ -472,7 +474,7 @@ def test_caras_no_quedan_huerfanas(aws, traductor, caras):
     g.add_response("index_faces", caras_indexadas("c1"))
     g.add_client_error("search_users", "ThrottlingException")
     g.add_response("delete_faces", {"DeletedFaces": ["c1"]}, {"CollectionId": coleccion, "FaceIds": ["c1"]})
-    with pytest.raises(guardar.rekognition.exceptions.ClientError):
+    with pytest.raises(caras_mod.rekognition.exceptions.ClientError):
         subir_y_analizar(traductor)
 
     # Reproceso que ahora cae en cuarentena: las caras de la pasada anterior salen de la colección
@@ -491,3 +493,48 @@ def test_caras_no_quedan_huerfanas(aws, traductor, caras):
     guardar.lambda_handler({**evento, "moderacion": [{"Name": "Explicit", "ParentName": "", "Confidence": 99.0}]}, None)
     g.assert_no_pending_responses()
     assert llamar("GET /fotos/{id}", foto=subida["foto"])[1]["personas"] == []
+
+
+def test_portada_y_volver_a_buscar_caras(aws, traductor, caras):
+    s, _ = caras
+    coleccion = f"jyj-revela-caras-{USUARIO}"
+    antes, _ = subir_y_analizar(traductor)  # subida antes de activar: sin caras
+    assert llamar("POST /fotos/{id}/caras", foto=antes)[0] == 409  # sin consentimiento no se busca
+
+    s.add_response("create_collection", {"StatusCode": 200})
+    llamar("PUT /personas")
+    s.add_response("index_faces", caras_indexadas("c1"))
+    s.add_response("search_users", {"UserMatches": []})
+    s.add_response("create_user", {})
+    s.add_response("associate_faces", asociada("c1"))
+    fotos = [subir_y_analizar(traductor)[0]]
+    persona = llamar("GET /personas")[1]["personas"][0]
+    s.add_response("index_faces", caras_indexadas("c2"))
+    s.add_response("search_users", {"UserMatches": [{"Similarity": 99.0, "User": {"UserId": persona["id"], "UserStatus": "ACTIVE"}}]})
+    s.add_response("associate_faces", asociada("c2"))
+    fotos.append(subir_y_analizar(traductor)[0])
+    persona = llamar("GET /personas")[1]["personas"][0]
+
+    # Elegir la portada entre sus fotos; una foto ajena no vale
+    otra = fotos[0] if persona["portada"]["foto"] == fotos[1] else fotos[1]
+    assert llamar("PUT /personas/{id}", {"portada": otra}, foto=persona["id"])[1]["portada"] == otra
+    assert llamar("GET /personas")[1]["personas"][0]["portada"]["foto"] == otra
+    assert llamar("PUT /personas/{id}", {"portada": antes}, foto=persona["id"])[0] == 400
+    assert llamar("PUT /personas/{id}", {}, foto=persona["id"])[0] == 400
+    assert llamar("PUT /personas/{id}", {"nombre": ""}, foto=persona["id"])[1] == {"id": persona["id"], "nombre": None, "portada": otra}
+
+    # Volver a buscar en la foto de antes, con el filtro de calidad permisivo: queda en el grupo de la misma persona
+    s.add_response("index_faces", caras_indexadas("c3"), {"CollectionId": coleccion, "ExternalImageId": antes, "MaxFaces": 10,
+                                                          "QualityFilter": "LOW", "Image": {"S3Object": {"Bucket": "revela-test", "Name": f"fotos/{USUARIO}/{antes}.jpg"}}})
+    s.add_response("search_users", {"UserMatches": [{"Similarity": 95.0, "User": {"UserId": persona["id"], "UserStatus": "ACTIVE"}}]})
+    s.add_response("associate_faces", asociada("c3"))
+    assert llamar("POST /fotos/{id}/caras", foto=antes)[1] == {"personas": [persona["id"]]}
+    assert llamar("GET /personas")[1]["personas"][0]["fotos"] == 3
+
+    # Otra vez sobre la misma foto: las caras de la pasada anterior se borran y el índice no se duplica
+    s.add_response("index_faces", caras_indexadas())
+    s.add_response("delete_faces", {"DeletedFaces": ["c3"]}, {"CollectionId": coleccion, "FaceIds": ["c3"]})
+    assert llamar("POST /fotos/{id}/caras", foto=antes)[1] == {"personas": []}
+    assert llamar("GET /personas")[1]["personas"][0]["fotos"] == 2
+    assert {f["id"] for f in llamar("GET /fotos", params={"q": "perro"})[1]["fotos"]} == {antes, *fotos}  # las otras claves siguen
+    s.assert_no_pending_responses()

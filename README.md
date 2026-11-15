@@ -22,7 +22,7 @@ Web: S3 privado ◄── CloudFront + OAC          Mapa: MapLibre + mosaicos de
 
 | Carpeta | Contenido |
 |---|---|
-| `lambdas/` | `api.py`, `procesar.py`, `guardar.py` y `test_flujo.py` (moto) |
+| `lambdas/` | `api.py`, `procesar.py`, `guardar.py`, `caras.py` y `test_flujo.py` (moto) |
 | `web/` | `index.html` + `app.js`, sin build; la configuración llega en `config.js` (la escribe Terraform) |
 | `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web` (58 recursos) |
 | `scripts/capa_pillow.sh` | Construye la capa de Pillow; Terraform la llama solo |
@@ -70,7 +70,9 @@ Destruir: `terraform destroy` (los buckets tienen `force_destroy`).
   con fotos de otra cuenta. `guardar` indexa las caras de las fotos nuevas y las agrupa con Rekognition Users
   (`SearchUsers` ≥ 90 %: persona conocida → `AssociateFaces`, si no `CreateUser`). En DynamoDB queda el índice
   `P#<persona>#<fecha>` con la caja de la cara (la portada se recorta en el navegador) y `PERSONA#<id>` con el nombre.
-  Desactivar borra la colección y esos registros. Las colecciones no son de Terraform: después de la exposición
+  La portada de cada persona se puede elegir entre sus fotos. "🔄 Buscar caras" en el detalle repite la búsqueda
+  con `QualityFilter=LOW` (caras pequeñas o borrosas, o fotos subidas antes de activar). La lógica está en
+  `lambdas/caras.py`, compartida por `guardar` y la API. Desactivar borra la colección y esos registros. Las colecciones no son de Terraform: después de la exposición
   correr `scripts/borrar_caras.sh`.
 - Concurrencia de Lambda de la cuenta = 10 compartida: Step Functions reintenta con espera si se llena.
 - Cada foto se analiza una sola vez (paso `Reclamar`, escritura condicional en DynamoDB) y `procesar` copia a `fotos/`

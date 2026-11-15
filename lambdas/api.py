@@ -11,7 +11,8 @@ GET    /mapa          → API key de Amazon Location (restringida a la web) para
 GET    /personas      → si el reconocimiento está activo y las personas con su cara de portada
 PUT    /personas      → activa el reconocimiento de caras (consentimiento): crea la colección del usuario
 DELETE /personas      → lo desactiva y borra todos los datos biométricos (la colección entera)
-PUT    /personas/{id} → le pone nombre a una persona (vacío lo quita)
+PUT    /personas/{id} → nombre (vacío lo quita) y/o foto de portada de una persona
+POST   /fotos/{id}/caras → vuelve a buscar caras en una foto con un filtro de calidad más permisivo
 """
 import base64
 import json
@@ -26,6 +27,8 @@ import boto3
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Key
+
+import caras as rostros
 
 log = logging.getLogger()
 log.setLevel(logging.INFO)
@@ -48,7 +51,6 @@ ESPERA_ANALISIS = timedelta(minutes=10)
 VECTORES = os.environ.get("VECTORES", "jyj-revela-vectores")
 EMBEDDINGS = "amazon.nova-2-multimodal-embeddings-v1:0"
 POR_SIGNIFICADO = 30
-CARAS = os.environ.get("CARAS", "jyj-revela-caras-")
 MAX_NOMBRE = 60
 # shortcut: umbral medido con una sola foto (relacionadas 0.38-0.70, ajenas 0.74-0.87); recalibrar con más fotos
 DISTANCIA_MAX = float(os.environ.get("DISTANCIA_MAX", "0.72"))
@@ -57,7 +59,7 @@ dynamo = boto3.resource("dynamodb")
 tabla = dynamo.Table(TABLA)
 s3 = boto3.client("s3", config=Config(signature_version="s3v4"))
 bedrock = boto3.client("bedrock-runtime")
-rekognition = boto3.client("rekognition")
+rekognition = rostros.rekognition
 _clave_mapa = None
 _vectores = None
 
@@ -206,7 +208,7 @@ def buscar(usuario, q, texto):
     # shortcut: máximo 100 resultados exactos sin paginar; paginar si una búsqueda llega a ese tope
     pk, exactas = f"U#{usuario}", []
     prefijos = [f"{p}{q}#" for p in ("E#", "T#", "L#")]
-    prefijos += [f"P#{i['SK'][8:]}#" for i in consultar(pk, "PERSONA#") if normalizar(i["nombre"]) == q]  # por nombre
+    prefijos += [f"P#{i['SK'][8:]}#" for i in consultar(pk, "PERSONA#") if normalizar(i.get("nombre", "")) == q]  # por nombre
     for prefijo in prefijos:
         r = tabla.query(KeyConditionExpression=Key("PK").eq(pk) & Key("SK").begins_with(prefijo), ScanIndexForward=False, Limit=100)
         exactas += [i["foto"] for i in r["Items"] if i["foto"] not in exactas]
@@ -267,10 +269,7 @@ def borrar(usuario, foto):
     pk = f"U#{usuario}"
     vectores().delete_vectors(vectorBucketName=VECTORES, indexName="fotos", keys=[foto])  # primero: si falla, no queda nada a medias
     if item.get("caras"):
-        try:
-            rekognition.delete_faces(CollectionId=CARAS + usuario, FaceIds=item["caras"])
-        except rekognition.exceptions.ResourceNotFoundException:
-            pass  # ya desactivó personas: la colección se borró con todas sus caras
+        rostros.borrar(usuario, item["caras"])
     s3.delete_objects(Bucket=BUCKET, Delete={"Objects": [{"Key": k} for k in (item["original"], item.get("revisada"), item.get("miniatura")) if k]})
     with tabla.batch_writer() as lote:
         for sk in item.get("claves", []):
@@ -305,21 +304,24 @@ def lugares(usuario):
 def personas(usuario):
     pk = f"U#{usuario}"
     activo = bool(tabla.get_item(Key={"PK": pk, "SK": "PERFIL"}).get("Item", {}).get("personas"))
-    nombres = {i["SK"][8:]: i["nombre"] for i in consultar(pk, "PERSONA#")}
+    datos = {i["SK"][8:]: i for i in consultar(pk, "PERSONA#")}
     grupos = {}
-    # De la más reciente a la más vieja: la portada es la última foto de cada persona
+    # De la más reciente a la más vieja: la portada es la que eligió el usuario o, si no, la última foto
     for i in consultar(pk, "P#", ScanIndexForward=False, ProjectionExpression="foto, persona, caja"):
-        if i["persona"] not in grupos:
-            grupos[i["persona"]] = {"id": i["persona"], "nombre": nombres.get(i["persona"]), "fotos": set(),
-                                    "portada": {"miniatura": firmar(f"miniaturas/{usuario}/{i['foto']}.jpg"), "caja": i["caja"]}}
-        grupos[i["persona"]]["fotos"].add(i["foto"])
+        g = grupos.setdefault(i["persona"], {"id": i["persona"], "nombre": datos.get(i["persona"], {}).get("nombre"),
+                                             "fotos": set(), "portada": None})
+        if g["portada"] is None or i["foto"] == datos.get(i["persona"], {}).get("portada"):
+            g["portada"] = {"foto": i["foto"], "miniatura": f"miniaturas/{usuario}/{i['foto']}.jpg", "caja": i["caja"]}
+        g["fotos"].add(i["foto"])
+    for g in grupos.values():
+        g["portada"]["miniatura"] = firmar(g["portada"]["miniatura"])
     lista = sorted(({**g, "fotos": len(g["fotos"])} for g in grupos.values()), key=lambda g: (-g["fotos"], g["nombre"] or "~"))
     return 200, {"activo": activo, "personas": lista}
 
 
 def activar_personas(usuario):
     try:
-        rekognition.create_collection(CollectionId=CARAS + usuario)
+        rekognition.create_collection(CollectionId=rostros.CARAS + usuario)
     except rekognition.exceptions.ResourceAlreadyExistsException:
         pass
     tabla.put_item(Item={"PK": f"U#{usuario}", "SK": "PERFIL", "personas": True,
@@ -332,7 +334,7 @@ def desactivar_personas(usuario):
     pk = f"U#{usuario}"
     tabla.delete_item(Key={"PK": pk, "SK": "PERFIL"})
     try:
-        rekognition.delete_collection(CollectionId=CARAS + usuario)
+        rekognition.delete_collection(CollectionId=rostros.CARAS + usuario)
     except rekognition.exceptions.ResourceNotFoundException:
         pass
     with tabla.batch_writer() as lote:
@@ -346,18 +348,57 @@ def desactivar_personas(usuario):
     return personas(usuario)
 
 
-def nombrar(usuario, persona, cuerpo):
+def editar_persona(usuario, persona, cuerpo):
     pk = f"U#{usuario}"
-    nombre = " ".join(str(cuerpo.get("nombre", "")).split())
-    if len(nombre) > MAX_NOMBRE:
-        raise ErrorCliente(400, f"El nombre puede tener hasta {MAX_NOMBRE} caracteres")
-    if not tabla.query(KeyConditionExpression=Key("PK").eq(pk) & Key("SK").begins_with(f"P#{persona}#"), Limit=1)["Items"]:
+    fotos = {i["foto"] for i in consultar(pk, f"P#{persona}#", ProjectionExpression="foto")}
+    if not fotos:
         raise ErrorCliente(404, "La persona no existe")
-    if nombre:
-        tabla.put_item(Item={"PK": pk, "SK": f"PERSONA#{persona}", "nombre": nombre})
-    else:
-        tabla.delete_item(Key={"PK": pk, "SK": f"PERSONA#{persona}"})
-    return 200, {"id": persona, "nombre": nombre or None}
+    poner, quitar, valores = [], [], {}
+    if "nombre" in cuerpo:
+        nombre = " ".join(str(cuerpo["nombre"] or "").split())
+        if len(nombre) > MAX_NOMBRE:
+            raise ErrorCliente(400, f"El nombre puede tener hasta {MAX_NOMBRE} caracteres")
+        if nombre:
+            poner.append("nombre = :n")
+            valores[":n"] = nombre
+        else:
+            quitar.append("nombre")
+    if "portada" in cuerpo:
+        if cuerpo["portada"] not in fotos:
+            raise ErrorCliente(400, "Esa foto no es de esta persona")
+        poner.append("portada = :p")
+        valores[":p"] = cuerpo["portada"]
+    if not poner and not quitar:
+        raise ErrorCliente(400, "No hay nada que cambiar")
+    expresion = " ".join(([f"SET {', '.join(poner)}"] if poner else []) + ([f"REMOVE {', '.join(quitar)}"] if quitar else []))
+    r = tabla.update_item(Key={"PK": pk, "SK": f"PERSONA#{persona}"}, UpdateExpression=expresion, ReturnValues="ALL_NEW",
+                          **({"ExpressionAttributeValues": valores} if valores else {}))
+    return 200, {"id": persona, "nombre": r["Attributes"].get("nombre"), "portada": r["Attributes"].get("portada")}
+
+
+def buscar_caras(usuario, foto):
+    """Otra pasada sobre una foto (subida antes de activar Personas, o con caras pequeñas o borrosas que el filtro
+    automático descartó): reemplaza sus caras y su índice por persona."""
+    pk = f"U#{usuario}"
+    item = obtener(usuario, foto)
+    if item["estado"] != "LISTA":
+        raise ErrorCliente(409, "Solo se buscan caras en fotos ya analizadas")
+    if not tabla.get_item(Key={"PK": pk, "SK": "PERFIL"}).get("Item", {}).get("personas"):
+        raise ErrorCliente(409, "Primero activa Personas")
+    personas, caras = rostros.reconocer(usuario, foto, BUCKET, item.get("revisada", item["original"]), calidad="LOW")
+    if item.get("caras"):
+        rostros.borrar(usuario, item["caras"])
+    claves = {f"P#{p}#{item['fecha_orden']}": {"persona": p, "caja": caja} for p, caja in personas}
+    otras = [c for c in item.get("claves", []) if not c.startswith("P#")]
+    with tabla.batch_writer(overwrite_by_pkeys=["PK", "SK"]) as lote:
+        for sk in set(item.get("claves", [])) - set(otras) - set(claves):
+            lote.delete_item(Key={"PK": pk, "SK": sk})
+        for sk, datos in claves.items():
+            lote.put_item(Item={"PK": pk, "SK": sk, "foto": foto, **datos})
+    ids = list(dict.fromkeys(p for p, _ in personas))
+    tabla.update_item(Key={"PK": pk, "SK": item["SK"]}, UpdateExpression="SET personas = :pe, caras = :cr, claves = :cl",
+                      ExpressionAttributeValues={":pe": ids, ":cr": caras, ":cl": otras + list(claves)})
+    return 200, {"personas": ids}
 
 
 def mapa():
@@ -406,7 +447,9 @@ def lambda_handler(event, _context):
         if ruta == "DELETE /personas":
             return responder(*desactivar_personas(usuario))
         if ruta == "PUT /personas/{id}":
-            return responder(*nombrar(usuario, foto, cuerpo))
+            return responder(*editar_persona(usuario, foto, cuerpo))
+        if ruta == "POST /fotos/{id}/caras":
+            return responder(*buscar_caras(usuario, foto))
         raise ErrorCliente(404, "Ruta no encontrada")
     except ErrorCliente as e:
         return responder(e.status, {"error": str(e)})
