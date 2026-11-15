@@ -14,12 +14,17 @@ DELETE /personas      → lo desactiva y borra todos los datos biométricos (la 
 PUT    /personas/{id} → nombre (vacío lo quita) y/o foto de portada de una persona
 POST   /personas/{id}/unir → {"persona": otra}: la otra persona pasa a ser esta (Rekognition la confundió con dos)
 POST   /fotos/{id}/caras → vuelve a buscar caras en una foto con un filtro de calidad más permisivo
+GET    /albumes       → álbumes del usuario;  POST /albumes {nombre} → crea uno
+GET    /albumes/{id}  → el álbum con sus fotos;  PUT {nombre?, agregar?, quitar?};  DELETE lo borra (y su enlace)
+POST   /albumes/{id}/enlace {dias} → enlace para verlo sin cuenta;  DELETE lo revoca
+GET    /compartidos/{token} (pública) → el álbum compartido con URLs de CloudFront firmadas por una hora
 """
 import base64
 import json
 import logging
 import os
 import re
+import secrets
 import unicodedata
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -54,6 +59,12 @@ VECTORES = os.environ.get("VECTORES", "jyj-revela-vectores")
 EMBEDDINGS = "amazon.nova-2-multimodal-embeddings-v1:0"
 POR_SIGNIFICADO = 30
 MAX_NOMBRE = 60
+MAX_ALBUM = 200
+DIAS_ENLACE = (1, 7, 30)
+VIGENCIA_CDN = 3600  # si se revoca el enlace, lo ya abierto deja de cargar a la hora
+CDN = os.environ.get("CDN", "")
+FIRMA_ID = os.environ.get("FIRMA_ID", "")
+LLAVE = os.environ.get("LLAVE", "/jyj-revela/cloudfront-llave")
 # shortcut: umbral medido con una sola foto (relacionadas 0.38-0.70, ajenas 0.74-0.87); recalibrar con más fotos
 DISTANCIA_MAX = float(os.environ.get("DISTANCIA_MAX", "0.72"))
 
@@ -64,6 +75,7 @@ bedrock = boto3.client("bedrock-runtime")
 rekognition = rostros.rekognition
 _clave_mapa = None
 _vectores = None
+_firmador = None
 
 
 def vectores():
@@ -89,6 +101,18 @@ def normalizar(texto):
     # Igual que en guardar.py: las claves del índice se buscan con la misma forma
     sin_tildes = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
     return re.sub(r"[#\s]+", " ", sin_tildes).strip().lower()
+
+
+def firmar_cdn(key, vence):
+    """URL de CloudFront firmada con la llave del key group: el bucket de fotos solo se abre así."""
+    global _firmador
+    if _firmador is None:
+        import rsa  # capa "firmas"
+        from botocore.signers import CloudFrontSigner
+        pem = boto3.client("ssm").get_parameter(Name=LLAVE, WithDecryption=True)["Parameter"]["Value"]
+        llave = rsa.PrivateKey.load_pkcs1(pem.encode())
+        _firmador = CloudFrontSigner(FIRMA_ID, lambda mensaje: rsa.sign(mensaje, llave, "SHA-1"))
+    return _firmador.generate_presigned_url(f"https://{CDN}/{key}", date_less_than=vence)
 
 
 def firmar(key):
@@ -227,14 +251,14 @@ def buscar(usuario, q, texto):
 
 
 def leer_fotos(pk, ids):
-    """{id: item} en el mismo orden de ids (máximo 100); las que ya no existen no aparecen."""
-    if not ids:
-        return {}
-    items, pedido = {}, {TABLA: {"Keys": [{"PK": pk, "SK": f"F#{i}"} for i in ids]}}
-    while pedido:  # DynamoDB puede devolver parte de las llaves sin leer si hay mucha carga
-        r = dynamo.batch_get_item(RequestItems=pedido)
-        items.update((i["SK"][2:], i) for i in r["Responses"][TABLA])
-        pedido = r.get("UnprocessedKeys")
+    """{id: item} en el mismo orden de ids; las que ya no existen no aparecen."""
+    items = {}
+    for inicio in range(0, len(ids), 100):  # tope de BatchGetItem
+        pedido = {TABLA: {"Keys": [{"PK": pk, "SK": f"F#{i}"} for i in dict.fromkeys(ids[inicio:inicio + 100])]}}
+        while pedido:  # DynamoDB puede devolver parte de las llaves sin leer si hay mucha carga
+            r = dynamo.batch_get_item(RequestItems=pedido)
+            items.update((i["SK"][2:], i) for i in r["Responses"][TABLA])
+            pedido = r.get("UnprocessedKeys")
     return {i: items[i] for i in ids if i in items}
 
 
@@ -443,6 +467,125 @@ def buscar_caras(usuario, foto):
     return 200, {"personas": ids}
 
 
+def obtener_album(usuario, album):
+    item = tabla.get_item(Key={"PK": f"U#{usuario}", "SK": f"ALBUM#{album}"}).get("Item")
+    if not item:
+        raise ErrorCliente(404, "El álbum no existe")
+    return item
+
+
+def nombre_album(cuerpo):
+    nombre = " ".join(str(cuerpo.get("nombre") or "").split())
+    if not nombre or len(nombre) > MAX_NOMBRE:
+        raise ErrorCliente(400, f"El álbum necesita un nombre de hasta {MAX_NOMBRE} caracteres")
+    return nombre
+
+
+def enlace(item):
+    """{url, expira} si el álbum está compartido y el enlace sigue vigente."""
+    if item.get("enlace") and int(item["enlace_expira"]) > datetime.now(timezone.utc).timestamp():
+        return {"url": f"https://{CDN}/album.html#{item['enlace']}",
+                "expira": datetime.fromtimestamp(int(item["enlace_expira"]), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+    return None
+
+
+def albumes(usuario):
+    pk = f"U#{usuario}"
+    items = sorted(consultar(pk, "ALBUM#"), key=lambda i: i["creado"], reverse=True)
+    portadas = leer_fotos(pk, [i["fotos"][0] for i in items if i.get("fotos")])
+    lista = []
+    for i in items:
+        portada = portadas.get((i.get("fotos") or [None])[0])
+        lista.append({"id": i["SK"][6:], "nombre": i["nombre"], "fotos": len(i.get("fotos", [])), "enlace": enlace(i),
+                      "portada": firmar(portada["miniatura"]) if portada and portada["estado"] == "LISTA" else None})
+    return 200, {"albumes": lista}
+
+
+def crear_album(usuario, cuerpo):
+    album = uuid.uuid4().hex
+    nombre = nombre_album(cuerpo)
+    tabla.put_item(Item={"PK": f"U#{usuario}", "SK": f"ALBUM#{album}", "nombre": nombre, "fotos": [],
+                         "creado": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")})
+    return 201, {"id": album, "nombre": nombre, "fotos": 0, "enlace": None, "portada": None}
+
+
+def ver_album(usuario, album):
+    item = obtener_album(usuario, album)
+    fotos = [f for f in map(resumen, leer_fotos(f"U#{usuario}", item.get("fotos", [])).values()) if f["estado"]]
+    return 200, {"id": album, "nombre": item["nombre"], "enlace": enlace(item), "fotos": fotos}
+
+
+def ids_validos(valor):
+    if not isinstance(valor, list) or len(valor) > MAX_ALBUM or not all(isinstance(i, str) and re.fullmatch(r"[0-9a-f]{32}", i) for i in valor):
+        raise ErrorCliente(400, "Lista de fotos inválida")
+    return valor
+
+
+def editar_album(usuario, album, cuerpo):
+    item = obtener_album(usuario, album)
+    nombre = nombre_album(cuerpo) if "nombre" in cuerpo else item["nombre"]
+    fotos = list(item.get("fotos", []))
+    if "agregar" in cuerpo:
+        # Solo fotos propias y ya analizadas: lo que entra a un álbum puede terminar compartido
+        propias = leer_fotos(f"U#{usuario}", ids_validos(cuerpo["agregar"]))
+        fotos += [i for i, f in propias.items() if f["estado"] == "LISTA" and i not in fotos]
+        if len(fotos) > MAX_ALBUM:
+            raise ErrorCliente(400, f"Un álbum puede tener hasta {MAX_ALBUM} fotos")
+    if "quitar" in cuerpo:
+        quitar = set(ids_validos(cuerpo["quitar"]))
+        fotos = [i for i in fotos if i not in quitar]
+    tabla.update_item(Key={"PK": item["PK"], "SK": item["SK"]}, UpdateExpression="SET nombre = :n, fotos = :f",
+                      ExpressionAttributeValues={":n": nombre, ":f": fotos})
+    return 200, {"id": album, "nombre": nombre, "fotos": len(fotos)}
+
+
+def revocar(item):
+    if item.get("enlace"):
+        tabla.delete_item(Key={"PK": f"C#{item['enlace']}", "SK": "C"})
+
+
+def borrar_album(usuario, album):
+    item = obtener_album(usuario, album)
+    revocar(item)
+    tabla.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+    return 204, None
+
+
+def compartir(usuario, album, cuerpo):
+    if cuerpo.get("dias") not in DIAS_ENLACE:
+        raise ErrorCliente(400, "El enlace puede durar 1, 7 o 30 días")
+    item = obtener_album(usuario, album)
+    revocar(item)  # un enlace nuevo invalida el anterior
+    token = secrets.token_urlsafe(24)
+    expira = int(datetime.now(timezone.utc).timestamp()) + cuerpo["dias"] * 86400
+    tabla.put_item(Item={"PK": f"C#{token}", "SK": "C", "usuario": usuario, "album": album, "expira": expira})
+    tabla.update_item(Key={"PK": item["PK"], "SK": item["SK"]}, UpdateExpression="SET enlace = :t, enlace_expira = :e",
+                      ExpressionAttributeValues={":t": token, ":e": expira})
+    return 200, enlace({"enlace": token, "enlace_expira": expira})
+
+
+def dejar_de_compartir(usuario, album):
+    item = obtener_album(usuario, album)
+    revocar(item)
+    tabla.update_item(Key={"PK": item["PK"], "SK": item["SK"]}, UpdateExpression="REMOVE enlace, enlace_expira")
+    return 204, None
+
+
+def ver_compartido(token):
+    """Ruta pública: solo lo necesario para mirar el álbum (sin GPS, etiquetas ni personas)."""
+    ahora = datetime.now(timezone.utc)
+    c = tabla.get_item(Key={"PK": f"C#{token}", "SK": "C"}).get("Item") if re.fullmatch(r"[A-Za-z0-9_-]{32}", token) else None
+    item = c and tabla.get_item(Key={"PK": f"U#{c['usuario']}", "SK": f"ALBUM#{c['album']}"}).get("Item")
+    # El TTL de DynamoDB borra tarde: la fecha se revisa aquí
+    if not item or item.get("enlace") != token or int(c["expira"]) <= ahora.timestamp():
+        raise ErrorCliente(404, "Este enlace no existe o ya venció")
+    vence = min(ahora + timedelta(seconds=VIGENCIA_CDN), datetime.fromtimestamp(int(c["expira"]), timezone.utc))
+    fotos = [{"miniatura": firmar_cdn(f["miniatura"], vence), "original": firmar_cdn(f.get("revisada", f["original"]), vence),
+              "descripcion": f.get("descripcion"), "fecha": f["fecha_orden"].split("#")[0]}
+             for f in leer_fotos(f"U#{c['usuario']}", item.get("fotos", [])).values() if f["estado"] == "LISTA"]
+    return 200, {"nombre": item["nombre"], "fotos": fotos}
+
+
 def mapa():
     # La key es pública por diseño (va al navegador) pero solo sirve para mosaicos y desde el dominio de la web
     global _clave_mapa
@@ -452,8 +595,13 @@ def mapa():
 
 
 def lambda_handler(event, _context):
-    usuario = event["requestContext"]["authorizer"]["jwt"]["claims"]["sub"]
     ruta = event["routeKey"]
+    if ruta == "GET /compartidos/{token}":  # la única ruta sin JWT
+        try:
+            return responder(*ver_compartido(event["pathParameters"]["token"]))
+        except ErrorCliente as e:
+            return responder(e.status, {"error": str(e)})
+    usuario = event["requestContext"]["authorizer"]["jwt"]["claims"]["sub"]
     params = event.get("queryStringParameters") or {}
     foto = (event.get("pathParameters") or {}).get("id", "")  # id de la foto o de la persona, según la ruta
     try:
@@ -492,6 +640,20 @@ def lambda_handler(event, _context):
             return responder(*editar_persona(usuario, foto, cuerpo))
         if ruta == "POST /personas/{id}/unir":
             return responder(*unir_personas(usuario, foto, cuerpo))
+        if ruta == "GET /albumes":
+            return responder(*albumes(usuario))
+        if ruta == "POST /albumes":
+            return responder(*crear_album(usuario, cuerpo))
+        if ruta == "GET /albumes/{id}":
+            return responder(*ver_album(usuario, foto))
+        if ruta == "PUT /albumes/{id}":
+            return responder(*editar_album(usuario, foto, cuerpo))
+        if ruta == "DELETE /albumes/{id}":
+            return responder(*borrar_album(usuario, foto))
+        if ruta == "POST /albumes/{id}/enlace":
+            return responder(*compartir(usuario, foto, cuerpo))
+        if ruta == "DELETE /albumes/{id}/enlace":
+            return responder(*dejar_de_compartir(usuario, foto))
         if ruta == "POST /fotos/{id}/caras":
             return responder(*buscar_caras(usuario, foto))
         raise ErrorCliente(404, "Ruta no encontrada")

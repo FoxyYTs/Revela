@@ -582,3 +582,89 @@ def test_unir_dos_personas(aws, traductor, caras):
     s.add_response("delete_faces", {"DeletedFaces": ["c2"]})
     llamar("DELETE /fotos/{id}", foto=ids[1])
     assert [(p["id"], p["fotos"]) for p in llamar("GET /personas")[1]["personas"]] == [(queda, 1)]
+
+
+@pytest.fixture
+def llave_cdn(monkeypatch):
+    import rsa
+    publica, privada = rsa.newkeys(1024)  # en AWS es de 2048 (Terraform); aquí basta para comprobar la firma
+    boto3.client("ssm").put_parameter(Name=api.LLAVE, Value=privada.save_pkcs1().decode(), Type="SecureString")
+    monkeypatch.setattr(api, "CDN", "cdn.test")
+    monkeypatch.setattr(api, "FIRMA_ID", "K123")
+    monkeypatch.setattr(api, "_firmador", None)
+    return publica
+
+
+def publico(token):
+    r = api.lambda_handler({"routeKey": "GET /compartidos/{token}", "pathParameters": {"token": token}, "requestContext": {}}, None)
+    return r["statusCode"], json.loads(r["body"])
+
+
+def test_albumes_y_enlace_compartido(aws, traductor, llave_cdn, monkeypatch):
+    global USUARIO
+    import rsa
+    from urllib.parse import parse_qs, urlsplit
+    from botocore.signers import CloudFrontSigner
+
+    playa, _ = subir_y_analizar(traductor)
+    oculta, _ = subir_y_analizar(traductor, moderacion=[{"Name": "Explicit", "ParentName": "", "Confidence": 99.0}])
+    assert llamar("POST /albumes", {"nombre": "  "})[0] == 400
+    status, album = llamar("POST /albumes", {"nombre": "Vacaciones  2026"})
+    assert status == 201 and album["nombre"] == "Vacaciones 2026"
+    aid = album["id"]
+
+    # Solo entran fotos propias y listas; repetir no duplica
+    assert llamar("PUT /albumes/{id}", {"agregar": [playa, oculta, "f" * 32, playa]}, foto=aid)[1]["fotos"] == 1
+    assert llamar("PUT /albumes/{id}", {"agregar": ["../x"]}, foto=aid)[0] == 400
+    det = llamar("GET /albumes/{id}", foto=aid)[1]
+    assert [f["id"] for f in det["fotos"]] == [playa] and det["enlace"] is None
+    lista = llamar("GET /albumes")[1]["albumes"]
+    assert [(a["id"], a["fotos"]) for a in lista] == [(aid, 1)] and lista[0]["portada"].startswith("https://")
+
+    assert llamar("POST /albumes/{id}/enlace", {"dias": 2}, foto=aid)[0] == 400
+    enlace = llamar("POST /albumes/{id}/enlace", {"dias": 7}, foto=aid)[1]
+    token = enlace["url"].split("#")[1]
+    assert enlace["url"].startswith("https://cdn.test/album.html#") and len(token) == 32
+
+    # Sin cuenta: nombre y fotos con URLs de CloudFront firmadas por una hora; nada de GPS, etiquetas ni personas
+    status, compartido = publico(token)
+    assert status == 200 and compartido["nombre"] == "Vacaciones 2026"
+    foto = compartido["fotos"][0]
+    assert set(foto) == {"miniatura", "original", "descripcion", "fecha"}
+    url = urlsplit(foto["original"])
+    assert url.netloc == "cdn.test" and url.path == f"/fotos/{USUARIO}/{playa}.jpg"
+    q = {k: v[0] for k, v in parse_qs(url.query).items()}
+    assert q["Key-Pair-Id"] == "K123"
+    vence = api.datetime.fromtimestamp(int(q["Expires"]), api.timezone.utc)
+    assert 3500 < (vence - api.datetime.now(api.timezone.utc)).total_seconds() <= 3600
+    politica = CloudFrontSigner("K123", None).build_policy(f"https://cdn.test{url.path}", vence).encode()
+    firma = __import__("base64").b64decode(q["Signature"].replace("-", "+").replace("_", "=").replace("~", "/"))
+    assert rsa.verify(politica, firma, llave_cdn) == "SHA-1"
+
+    # Otro usuario no ve ni toca el álbum
+    original, USUARIO = USUARIO, "2222-bbbb"
+    try:
+        assert llamar("GET /albumes/{id}", foto=aid)[0] == 404
+        assert llamar("POST /albumes/{id}/enlace", {"dias": 1}, foto=aid)[0] == 404
+        assert llamar("GET /albumes")[1]["albumes"] == []
+    finally:
+        USUARIO = original
+
+    # Un enlace nuevo reemplaza al anterior; revocar y borrar lo dejan en 404; tokens raros también
+    nuevo = llamar("POST /albumes/{id}/enlace", {"dias": 1}, foto=aid)[1]["url"].split("#")[1]
+    assert publico(token)[0] == 404 and publico(nuevo)[0] == 200
+    assert llamar("DELETE /albumes/{id}/enlace", foto=aid)[0] == 204
+    assert publico(nuevo)[0] == 404
+    assert publico("x")[0] == 404 and publico("../" + "a" * 29)[0] == 404
+
+    # Vencido aunque el TTL de DynamoDB todavía no lo haya borrado
+    vencido = llamar("POST /albumes/{id}/enlace", {"dias": 1}, foto=aid)[1]["url"].split("#")[1]
+    monkeypatch.setattr(api, "datetime", type("Despues", (api.datetime,), {"now": classmethod(lambda cls, tz=None: api.datetime.fromtimestamp(2e10, tz))}))
+    assert publico(vencido)[0] == 404
+    monkeypatch.undo()
+
+    # Quitar fotos y borrar el álbum (las fotos se quedan)
+    assert llamar("PUT /albumes/{id}", {"quitar": [playa], "nombre": "Playa"}, foto=aid)[1] == {"id": aid, "nombre": "Playa", "fotos": 0}
+    vivo = llamar("POST /albumes/{id}/enlace", {"dias": 30}, foto=aid)[1]["url"].split("#")[1]
+    assert llamar("DELETE /albumes/{id}", foto=aid)[0] == 204
+    assert publico(vivo)[0] == 404 and llamar("GET /fotos/{id}", foto=playa)[0] == 200

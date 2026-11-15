@@ -12,6 +12,15 @@ variable "bucket_fotos" {
   type        = string
 }
 
+variable "fotos_arn" {
+  type = string
+}
+
+variable "fotos_dominio" {
+  description = "Dominio regional del bucket de fotos: segundo origen de CloudFront para los álbumes compartidos"
+  type        = string
+}
+
 variable "config" {
   description = "Valores que la página recibe en config.js (URL de la API, Cognito)"
   type        = map(string)
@@ -49,6 +58,16 @@ resource "aws_s3_object" "app" {
   source       = "${dirname(var.html)}/app.js"
   etag         = filemd5("${dirname(var.html)}/app.js")
   content_type = "application/javascript; charset=utf-8"
+}
+
+# Página pública de los álbumes compartidos
+resource "aws_s3_object" "album" {
+  for_each     = { "album.html" = "text/html; charset=utf-8", "album.js" = "application/javascript; charset=utf-8" }
+  bucket       = aws_s3_bucket.web.id
+  key          = each.key
+  source       = "${dirname(var.html)}/${each.key}"
+  etag         = filemd5("${dirname(var.html)}/${each.key}")
+  content_type = each.value
 }
 
 resource "aws_s3_object" "config" {
@@ -129,6 +148,26 @@ resource "aws_cloudfront_distribution" "web" {
     origin_access_control_id = aws_cloudfront_origin_access_control.web.id
   }
 
+  # Álbumes compartidos: las fotos solo salen por aquí y con URL firmada por la API (key group); sin firma, 403
+  origin {
+    origin_id                = "fotos"
+    domain_name              = var.fotos_dominio
+    origin_access_control_id = aws_cloudfront_origin_access_control.web.id
+  }
+
+  dynamic "ordered_cache_behavior" {
+    for_each = ["miniaturas/*", "fotos/*"]
+    content {
+      path_pattern           = ordered_cache_behavior.value
+      target_origin_id       = "fotos"
+      viewer_protocol_policy = "redirect-to-https"
+      allowed_methods        = ["GET", "HEAD"]
+      cached_methods         = ["GET", "HEAD"]
+      trusted_key_groups     = [aws_cloudfront_key_group.firma.id]
+      cache_policy_id        = "658327ea-f89d-4fab-a63d-7e88639e58f6" # Managed-CachingOptimized
+    }
+  }
+
   default_cache_behavior {
     target_origin_id       = "web"
     viewer_protocol_policy = "redirect-to-https"
@@ -165,6 +204,44 @@ resource "aws_s3_bucket_policy" "web" {
   })
 
   depends_on = [aws_s3_bucket_public_access_block.web]
+}
+
+resource "aws_s3_bucket_policy" "fotos" {
+  bucket = split(":::", var.fotos_arn)[1]
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Principal = { Service = "cloudfront.amazonaws.com" }
+      Action    = "s3:GetObject"
+      Resource  = ["${var.fotos_arn}/miniaturas/*", "${var.fotos_arn}/fotos/*"]
+      Condition = { StringEquals = { "AWS:SourceArn" = aws_cloudfront_distribution.web.arn } }
+    }]
+  })
+}
+
+# Llave para firmar las URLs de los álbumes compartidos: la pública va al key group de CloudFront y la privada a SSM,
+# de donde la lee la API. shortcut: la privada también queda en el tfstate (bucket privado y cifrado); generarla fuera
+# de Terraform si el estado se comparte con más gente
+resource "tls_private_key" "firma" {
+  algorithm = "RSA"
+  rsa_bits  = 2048
+}
+
+resource "aws_ssm_parameter" "llave" {
+  name  = "/${var.prefijo}/cloudfront-llave"
+  type  = "SecureString"
+  value = tls_private_key.firma.private_key_pem
+}
+
+resource "aws_cloudfront_public_key" "firma" {
+  name        = "${var.prefijo}-albumes"
+  encoded_key = tls_private_key.firma.public_key_pem
+}
+
+resource "aws_cloudfront_key_group" "firma" {
+  name  = "${var.prefijo}-albumes"
+  items = [aws_cloudfront_public_key.firma.id]
 }
 
 # API key de Amazon Location para los mosaicos del mapa. El provider de AWS no tiene recurso para las keys v2,
@@ -204,6 +281,18 @@ output "mapa_key" {
 
 output "mapa_key_arn" {
   value = aws_cloudformation_stack.mapa.outputs["Arn"]
+}
+
+output "firma_id" {
+  value = aws_cloudfront_public_key.firma.id
+}
+
+output "llave" {
+  value = aws_ssm_parameter.llave.name
+}
+
+output "llave_arn" {
+  value = aws_ssm_parameter.llave.arn
 }
 
 output "dominio" {

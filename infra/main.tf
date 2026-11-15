@@ -34,7 +34,7 @@ module "pipeline" {
   indice_arn  = module.datos.indice_arn
   zip         = data.archive_file.lambdas.output_path
   zip_hash    = data.archive_file.lambdas.output_base64sha256
-  script_capa = "${path.module}/../scripts/capa_pillow.sh"
+  script_capa = "${path.module}/../scripts/capa.sh"
 }
 
 module "api" {
@@ -53,13 +53,20 @@ module "api" {
   origenes     = local.origenes
   mapa_key     = module.web.mapa_key
   mapa_key_arn = module.web.mapa_key_arn
+  cdn          = module.web.dominio
+  firma_id     = module.web.firma_id
+  llave        = module.web.llave
+  llave_arn    = module.web.llave_arn
+  script_capa  = "${path.module}/../scripts/capa.sh"
 }
 
 module "web" {
-  source       = "./modules/web"
-  prefijo      = local.prefijo
-  html         = "${path.module}/../web/index.html"
-  bucket_fotos = module.datos.bucket
+  source        = "./modules/web"
+  prefijo       = local.prefijo
+  html          = "${path.module}/../web/index.html"
+  bucket_fotos  = module.datos.bucket
+  fotos_arn     = module.datos.bucket_arn
+  fotos_dominio = module.datos.bucket_dominio
   config = {
     api      = module.api.url
     region   = "us-east-1"

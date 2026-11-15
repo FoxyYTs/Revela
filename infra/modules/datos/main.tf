@@ -102,6 +102,10 @@ output "bucket" {
   value = aws_s3_bucket.fotos.bucket
 }
 
+output "bucket_dominio" {
+  value = aws_s3_bucket.fotos.bucket_regional_domain_name
+}
+
 output "bucket_arn" {
   value = aws_s3_bucket.fotos.arn
 }

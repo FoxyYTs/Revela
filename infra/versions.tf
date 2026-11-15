@@ -12,6 +12,10 @@ terraform {
       source  = "hashicorp/external"
       version = "~> 2.3"
     }
+    tls = {
+      source  = "hashicorp/tls"
+      version = "~> 4.0"
+    }
   }
 
   required_version = ">= 1.10" # use_lockfile en el backend S3

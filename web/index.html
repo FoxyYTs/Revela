@@ -52,6 +52,14 @@
   .consentimiento { padding: 24px; max-width: 560px; display: flex; flex-direction: column; gap: 12px; }
   .consentimiento h3 { margin: 0; font: 600 22px Fraunces, serif; }
   .consentimiento p, .consentimiento li { margin: 0; color: var(--suave); line-height: 1.5; }
+  .lista-albumes { display: grid; gap: 8px; }
+  .album { display: flex; gap: 12px; align-items: center; background: var(--fondo); border: 1px solid var(--borde);
+           border-radius: 10px; padding: 8px; text-align: left; }
+  .album:hover { border-color: var(--acento-2); }
+  .album img, .album .sin-portada { width: 48px; height: 48px; object-fit: cover; border-radius: 6px; background: var(--panel); flex: none; }
+  .album small { display: block; color: var(--suave); }
+  .nuevo-album { display: flex; gap: 8px; }
+  .nuevo-album input { flex: 1; min-width: 0; background: var(--fondo); border: 1px solid var(--borde); border-radius: 999px; padding: 8px 14px; }
   .consentimiento ul { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
   .grilla { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; }
   .foto { position: relative; aspect-ratio: 1; border-radius: var(--radio); overflow: hidden; background: var(--panel);
@@ -171,6 +179,7 @@
     </form>
     <button class="btn" id="btn-mapa" aria-pressed="false">🗺️ Mapa</button>
     <button class="btn" id="btn-personas">👤 Personas</button>
+    <button class="btn" id="btn-albumes">📚 Álbumes</button>
     <label class="ubicacion" title="Si la foto no trae GPS (los celulares lo borran al compartir), se guarda dónde estabas al subirla">
       <input type="checkbox" id="usar-ubicacion"> Mi ubicación
     </label>
@@ -210,6 +219,7 @@
       <div class="acciones">
         <button class="btn peligro" id="d-borrar">Borrar</button>
         <button class="btn oculto" id="d-caras" title="Otra pasada que también acepta caras pequeñas o borrosas">🔄 Buscar caras</button>
+        <select class="btn" id="d-album" aria-label="Agregar a un álbum"></select>
         <button class="btn" id="d-cerrar" autofocus>Cerrar</button>
       </div>
     </div>
@@ -231,6 +241,19 @@
       <button class="btn peligro oculto" id="p-desactivar">Desactivar y borrar caras</button>
       <button class="btn" id="p-cerrar">Cerrar</button>
     </div>
+  </div>
+</dialog>
+
+<dialog id="dlg-albumes" style="max-width:560px">
+  <div class="consentimiento">
+    <h3>Álbumes</h3>
+    <div class="lista-albumes" id="a-lista"></div>
+    <form id="a-nuevo" class="nuevo-album">
+      <input name="nombre" maxlength="60" placeholder="Nombre del álbum nuevo" required>
+      <button class="btn primario">Crear</button>
+    </form>
+    <p>Agrega fotos desde el detalle de cada foto. Un álbum compartido se ve sin cuenta con su enlace, hasta que venza o lo revoques.</p>
+    <div class="acciones"><button class="btn" id="a-cerrar">Cerrar</button></div>
   </div>
 </dialog>
 

@@ -98,7 +98,7 @@ resource "aws_s3_bucket_notification" "fotos" {
 # ---------- Lambdas del flujo ----------
 
 data "external" "capa_pillow" {
-  program = ["bash", var.script_capa]
+  program = ["bash", var.script_capa, "pillow", "pillow==11.3.0"]
 }
 
 resource "aws_lambda_layer_version" "pillow" {

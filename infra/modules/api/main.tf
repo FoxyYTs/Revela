@@ -50,6 +50,27 @@ variable "mapa_key_arn" {
   type = string
 }
 
+variable "cdn" {
+  description = "Dominio de CloudFront: sirve la página del álbum compartido y sus fotos firmadas"
+  type        = string
+}
+
+variable "firma_id" {
+  type = string
+}
+
+variable "llave" {
+  type = string
+}
+
+variable "llave_arn" {
+  type = string
+}
+
+variable "script_capa" {
+  type = string
+}
+
 variable "origenes" {
   type = list(string)
 }
@@ -91,6 +112,8 @@ resource "aws_iam_role_policy" "api" {
       { Effect = "Allow", Action = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"], Resource = "${var.bucket_arn}/originales/*" },
       { Effect = "Allow", Action = ["s3:GetObject", "s3:DeleteObject"], Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*"] },
       { Effect = "Allow", Action = "geo:DescribeKey", Resource = var.mapa_key_arn },
+      # Llave privada para firmar URLs de CloudFront (cifrada con la llave administrada aws/ssm)
+      { Effect = "Allow", Action = "ssm:GetParameter", Resource = var.llave_arn },
       # Buscar por significado: vector del texto con Nova y consulta filtrada por usuario (el filtro exige GetVectors)
       { Effect = "Allow", Action = "bedrock:InvokeModel", Resource = "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-multimodal-embeddings-v1:0" },
       { Effect = "Allow", Action = ["s3vectors:QueryVectors", "s3vectors:GetVectors", "s3vectors:DeleteVectors"], Resource = var.indice_arn },
@@ -105,11 +128,24 @@ resource "aws_cloudwatch_log_group" "api" {
   retention_in_days = 7
 }
 
+# rsa (puro Python) para firmar las URLs de CloudFront con botocore.signers.CloudFrontSigner
+data "external" "capa_firmas" {
+  program = ["bash", var.script_capa, "firmas", "rsa==4.9.1"]
+}
+
+resource "aws_lambda_layer_version" "firmas" {
+  layer_name          = "${var.prefijo}-firmas"
+  filename            = data.external.capa_firmas.result.path
+  source_code_hash    = filebase64sha256(data.external.capa_firmas.result.path)
+  compatible_runtimes = ["python3.12"]
+}
+
 resource "aws_lambda_function" "api" {
   function_name    = "${var.prefijo}-api"
   role             = aws_iam_role.api.arn
   runtime          = "python3.12"
   handler          = "api.lambda_handler"
+  layers           = [aws_lambda_layer_version.firmas.arn]
   filename         = var.zip
   source_code_hash = var.zip_hash
   timeout          = 29 # "Buscar caras" hace hasta 3 llamadas a Rekognition por cara; API Gateway corta a los 30 s
@@ -123,6 +159,9 @@ resource "aws_lambda_function" "api" {
       MAPA_KEY    = var.mapa_key
       VECTORES    = var.vectores
       CARAS       = "${var.prefijo}-caras-"
+      CDN         = var.cdn
+      FIRMA_ID    = var.firma_id
+      LLAVE       = var.llave
     }
   }
 
@@ -163,12 +202,21 @@ resource "aws_apigatewayv2_integration" "api" {
 
 resource "aws_apigatewayv2_route" "rutas" {
   for_each = toset(["POST /subidas", "GET /fotos", "GET /fotos/{id}", "DELETE /fotos/{id}", "GET /etiquetas", "GET /lugares", "GET /mapa",
-  "GET /personas", "PUT /personas", "DELETE /personas", "PUT /personas/{id}", "POST /fotos/{id}/caras", "POST /personas/{id}/unir"])
+    "GET /personas", "PUT /personas", "DELETE /personas", "PUT /personas/{id}", "POST /fotos/{id}/caras", "POST /personas/{id}/unir",
+    "GET /albumes", "POST /albumes", "GET /albumes/{id}", "PUT /albumes/{id}", "DELETE /albumes/{id}",
+  "POST /albumes/{id}/enlace", "DELETE /albumes/{id}/enlace"])
   api_id             = aws_apigatewayv2_api.this.id
   route_key          = each.value
   target             = "integrations/${aws_apigatewayv2_integration.api.id}"
   authorization_type = "JWT"
   authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+}
+
+# Única ruta sin autorizador: el álbum compartido se abre sin cuenta (el token de 32 caracteres es la credencial)
+resource "aws_apigatewayv2_route" "compartidos" {
+  api_id    = aws_apigatewayv2_api.this.id
+  route_key = "GET /compartidos/{token}"
+  target    = "integrations/${aws_apigatewayv2_integration.api.id}"
 }
 
 resource "aws_apigatewayv2_stage" "default" {

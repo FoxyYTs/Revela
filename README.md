@@ -18,13 +18,14 @@ Navegador ──Cognito (login)──► API Gateway HTTP (JWT) ──► Lambda
                                                                              Nova Multimodal Embeddings ──► S3 Vectors
                                                                              Rekognition IndexFaces + Users (si activó personas)
 Web: S3 privado ◄── CloudFront + OAC          Mapa: MapLibre + mosaicos de Amazon Location (API key solo para la web)
+     album.html ──► GET /compartidos/{token} (sin cuenta) ──► URLs de CloudFront firmadas (key group) ──► fotos/ y miniaturas/
 ```
 
 | Carpeta | Contenido |
 |---|---|
 | `lambdas/` | `api.py`, `procesar.py`, `guardar.py`, `caras.py` y `test_flujo.py` (moto) |
 | `web/` | `index.html` + `app.js`, sin build; la configuración llega en `config.js` (la escribe Terraform) |
-| `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web` (58 recursos) |
+| `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web` (74 recursos) |
 | `scripts/capa_pillow.sh` | Construye la capa de Pillow; Terraform la llama solo |
 
 ## Pruebas
@@ -75,6 +76,14 @@ Destruir: `terraform destroy` (los buckets tienen `force_destroy`).
   con `QualityFilter=LOW` (caras pequeñas o borrosas, o fotos subidas antes de activar). La lógica está en
   `lambdas/caras.py`, compartida por `guardar` y la API. Desactivar borra la colección y esos registros. Las colecciones no son de Terraform: después de la exposición
   correr `scripts/borrar_caras.sh`.
+- Álbumes compartidos: el dueño arma álbumes (máx. 200 fotos, solo propias y ya analizadas) y genera un enlace de 1, 7 o
+  30 días: `album.html#<token>`. El token va en el fragmento, que no viaja en el Referer ni llega al servidor web. La
+  ruta pública `GET /compartidos/{token}` es la única sin JWT y devuelve solo nombre, descripción, fecha y URLs de
+  CloudFront firmadas por 1 hora. Por eso revocar el enlace corta también lo que ya estaba abierto. El bucket de fotos
+  sigue privado: CloudFront (OAC) solo lee `fotos/` y `miniaturas/`, y esos comportamientos exigen firma del key group
+  (sin firma, 403). La llave privada RSA la genera Terraform (`tls_private_key`), va a SSM como SecureString y la
+  API la lee al arrancar. También queda en el tfstate: el bucket es privado y cifrado, y la llave solo sirve para leer fotos.
+  La firma usa `rsa` (puro Python) en la capa `firmas`, construida por `scripts/capa.sh` como la de Pillow.
 - Concurrencia de Lambda de la cuenta = 10 compartida: Step Functions reintenta con espera si se llena.
 - Cada foto se analiza una sola vez (paso `Reclamar`, escritura condicional en DynamoDB) y `procesar` copia a `fotos/`
   los bytes que leyó: Rekognition y la app usan esa copia, así que reusar la URL de subida no repite el gasto

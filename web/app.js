@@ -143,10 +143,10 @@ $("#btn-salir").onclick = async () => {
 
 // ---------- Galería ----------
 
-const estado = { q: "", persona: null, eligiendo: false, uniendo: false, siguiente: null, fotos: [], sondeo: null, cargada: 0, personas: { activo: false, personas: [] } };
+const estado = { q: "", persona: null, album: null, albumes: [], eligiendo: false, uniendo: false, siguiente: null, fotos: [], sondeo: null, cargada: 0, personas: { activo: false, personas: [] } };
 
 function entrar() {
-  estado.persona = null;  // otra cuenta pudo dejar un filtro puesto
+  estado.persona = estado.album = null;  // otra cuenta pudo dejar un filtro puesto
   $("#acceso").classList.add("oculto");
   $("#app").classList.remove("oculto");
   cargar();
@@ -158,12 +158,13 @@ async function cargar(mas = false) {
     if (estado.q) params.set("q", estado.q);
     if (estado.persona) params.set("persona", estado.persona);
     if (mas && estado.siguiente) params.set("siguiente", estado.siguiente);
-    const r = await api("GET", `/fotos?${params}`);
+    const r = estado.album ? await api("GET", `/albumes/${estado.album.id}`) : await api("GET", `/fotos?${params}`);
+    if (estado.album) estado.album = r;
     estado.fotos = mas ? estado.fotos.concat(r.fotos) : r.fotos;
     if (!mas) estado.cargada = Date.now();
     estado.siguiente = r.siguiente;
     pintar();
-    if (!mas) { cargarEtiquetas().catch(() => {}); cargarPersonas().catch(() => {}); }
+    if (!mas) { cargarEtiquetas().catch(() => {}); cargarPersonas().catch(() => {}); cargarAlbumes().catch(() => {}); }
   } catch (e) { if (e.message !== "sesión cerrada") aviso(e.message); }
 }
 
@@ -176,13 +177,71 @@ async function cargarEtiquetas() {
 
 const normal = (t) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
 
-function buscar(q, persona = null) {
+function buscar(q, persona = null, album = null) {
   if (!$("#vista-mapa").classList.contains("oculto")) verMapa(false);
   $("#q").value = q;
   estado.q = q.trim();
   estado.persona = persona;
+  estado.album = album;
   estado.eligiendo = estado.uniendo = false;
   cargar();
+}
+
+// ---------- Álbumes ----------
+
+async function cargarAlbumes() {
+  estado.albumes = (await api("GET", "/albumes")).albumes;
+  $("#a-lista").replaceChildren(...estado.albumes.map((a) =>
+    h("button", { className: "album", onclick: () => { $("#dlg-albumes").close(); buscar("", null, a); } },
+      a.portada ? h("img", { src: a.portada, alt: "" }) : h("span", { className: "sin-portada" }),
+      h("span", {}, h("b", { textContent: a.nombre }), h("small", { textContent: `${a.fotos} foto(s)${a.enlace ? " · compartido" : ""}` })))));
+  if (!estado.albumes.length) $("#a-lista").replaceChildren(h("p", { textContent: "Todavía no tienes álbumes." }));
+}
+
+$("#btn-albumes").onclick = () => { cargarAlbumes().catch((e) => aviso(e.message)); $("#dlg-albumes").showModal(); };
+$("#a-cerrar").onclick = () => $("#dlg-albumes").close();
+$("#a-nuevo").onsubmit = async (e) => {
+  e.preventDefault();
+  try {
+    const a = await api("POST", "/albumes", { nombre: e.target.nombre.value });
+    e.target.reset();
+    $("#dlg-albumes").close();
+    buscar("", null, a);
+  } catch (err) { aviso(err.message); }
+};
+
+async function accionAlbum(fn) {
+  try { await fn(); await cargar(); } catch (e) { aviso(e.message); }
+}
+
+async function copiar(url) {
+  try { await navigator.clipboard.writeText(url); aviso("Enlace copiado"); }
+  catch { prompt("Copia el enlace:", url); }
+}
+
+function barraAlbum() {
+  const a = estado.album, ruta = `/albumes/${a.id}`;
+  const chip = (textContent, onclick) => h("button", { className: "chip", textContent, onclick });
+  return [
+    `${estado.fotos.length} foto(s) en «${a.nombre}»`,
+    chip("✏️ Renombrar", () => {
+      const nombre = prompt("Nombre del álbum", a.nombre);
+      if (nombre !== null) accionAlbum(() => api("PUT", ruta, { nombre }));
+    }),
+    ...(a.enlace
+      ? [chip("🔗 Copiar enlace", () => copiar(a.enlace.url)),
+         h("small", { textContent: `vence ${fmtFecha(a.enlace.expira)}` }),
+         chip("Dejar de compartir", () => accionAlbum(() => api("DELETE", `${ruta}/enlace`)))]
+      : [chip("🔗 Compartir", () => {
+          const dias = Number(prompt("¿Cuántos días dura el enlace? (1, 7 o 30)", "7"));
+          if (dias) accionAlbum(async () => copiar((await api("POST", `${ruta}/enlace`, { dias })).url));
+        })]),
+    chip("🗑️ Borrar álbum", async () => {
+      if (!confirm(`¿Borrar el álbum «${a.nombre}»? Las fotos se quedan en tu galería.`)) return;
+      try { await api("DELETE", ruta); buscar(""); } catch (e) { aviso(e.message); }
+    }),
+    chip("✕ Ver todas", () => buscar("")),
+  ];
 }
 
 // ---------- Personas (opcional, con consentimiento) ----------
@@ -271,12 +330,14 @@ function pintar() {
   $("#grilla").classList.toggle("eligiendo", estado.eligiendo);
   $("#personas").classList.toggle("eligiendo", estado.uniendo);
   $("#grilla").replaceChildren(...estado.fotos.map(tarjeta));
-  $("#vacio").classList.toggle("oculto", estado.fotos.length > 0 || !!estado.q || !!estado.persona);
+  $("#vacio").classList.toggle("oculto", estado.fotos.length > 0 || !!estado.q || !!estado.persona || !!estado.album);
   $("#btn-mas").classList.toggle("oculto", !estado.siguiente);
   const eb = $("#estado-busqueda");
-  eb.classList.toggle("oculto", !estado.q && !estado.persona);
+  eb.classList.toggle("oculto", !estado.q && !estado.persona && !estado.album);
   const parecidas = estado.fotos.filter((f) => f.parecida).length;
-  if (estado.persona) {
+  if (estado.album) {
+    eb.replaceChildren(...barraAlbum());
+  } else if (estado.persona) {
     const cancelar = h("button", { className: "chip", textContent: "Cancelar", onclick: () => { estado.eligiendo = estado.uniendo = false; pintar(); } });
     eb.replaceChildren(...(estado.eligiendo ? ["Toca la foto que quieres de portada", cancelar]
       : estado.uniendo ? ["Toca arriba, en la fila de caras, a la otra persona", cancelar]
@@ -291,7 +352,7 @@ function pintar() {
 
   // Mientras alguna foto se esté revelando, refresca la galería cada 3 s
   clearTimeout(estado.sondeo);
-  if (!estado.q && !estado.persona && estado.fotos.some((f) => f.estado === "PROCESANDO")) estado.sondeo = setTimeout(() => cargar(), 3000);
+  if (!estado.q && !estado.persona && !estado.album && estado.fotos.some((f) => f.estado === "PROCESANDO")) estado.sondeo = setTimeout(() => cargar(), 3000);
 }
 
 $("#btn-mas").onclick = () => cargar(true);
@@ -344,6 +405,33 @@ async function abrir(id) {
       abrir(id);
     } catch (e) { aviso(e.message); }
     finally { $("#d-caras").disabled = false; $("#d-caras").textContent = "🔄 Buscar caras"; }
+  };
+  // Agregar a un álbum (o quitar del que se está viendo); solo fotos listas
+  const sel = $("#d-album");
+  sel.classList.toggle("oculto", f.estado !== "LISTA");
+  sel.replaceChildren(h("option", { value: "", textContent: "📚 Álbum…" }),
+    ...(estado.album ? [h("option", { value: "quitar", textContent: `Quitar de «${estado.album.nombre}»` })] : []),
+    ...estado.albumes.filter((a) => a.id !== estado.album?.id).map((a) => h("option", { value: a.id, textContent: `Agregar a «${a.nombre}»` })),
+    h("option", { value: "nuevo", textContent: "Agregar a un álbum nuevo…" }));
+  sel.onchange = async () => {
+    const valor = sel.value;
+    sel.value = "";
+    try {
+      if (valor === "quitar") {
+        await api("PUT", `/albumes/${estado.album.id}`, { quitar: [id] });
+        $("#dialogo").close();
+        return cargar();
+      }
+      let album = valor;
+      if (valor === "nuevo") {
+        const nombre = prompt("Nombre del álbum nuevo");
+        if (!nombre) return;
+        album = (await api("POST", "/albumes", { nombre })).id;
+      }
+      await api("PUT", `/albumes/${album}`, { agregar: [id] });
+      aviso("Agregada al álbum");
+      cargarAlbumes().catch(() => {});
+    } catch (e) { aviso(e.message); }
   };
   $("#d-borrar").onclick = async () => {
     if (!confirm("¿Borrar esta foto para siempre?")) return;
