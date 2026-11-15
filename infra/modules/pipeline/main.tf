@@ -125,7 +125,7 @@ resource "aws_iam_role_policy" "procesar" {
     Version = "2012-10-17"
     Statement = [
       { Effect = "Allow", Action = ["s3:GetObject", "s3:DeleteObject"], Resource = "${var.bucket_arn}/originales/*" },
-      { Effect = "Allow", Action = "s3:PutObject", Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*"] },
+      { Effect = "Allow", Action = "s3:PutObject", Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*", "${var.bucket_arn}/publicas/*"] },
     ]
   })
 }
@@ -173,7 +173,7 @@ resource "aws_iam_role_policy" "guardar" {
     Version = "2012-10-17"
     Statement = [
       { Effect = "Allow", Action = ["dynamodb:GetItem", "dynamodb:UpdateItem", "dynamodb:BatchWriteItem"], Resource = var.tabla_arn },
-      { Effect = "Allow", Action = "s3:DeleteObject", Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*"] },
+      { Effect = "Allow", Action = "s3:DeleteObject", Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*", "${var.bucket_arn}/publicas/*"] },
       { Effect = "Allow", Action = "s3:GetObject", Resource = "${var.bucket_arn}/miniaturas/*" }, # Nova describe la miniatura
       # Personas (solo usuarios que lo activaron): Rekognition lee fotos/ con los permisos de este rol
       { Effect = "Allow", Action = "s3:GetObject", Resource = "${var.bucket_arn}/fotos/*" },

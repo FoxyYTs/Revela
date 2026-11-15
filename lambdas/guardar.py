@@ -170,7 +170,7 @@ def lambda_handler(event, _context):
     if not actual:
         # El usuario la borró mientras se analizaba: no se resucita y se limpia la miniatura
         log.info("Foto %s ya no existe; se descarta", foto)
-        s3.delete_objects(Bucket=event["bucket"], Delete={"Objects": [{"Key": imagen["miniatura"]}, {"Key": imagen["revisada"]}]})
+        s3.delete_objects(Bucket=event["bucket"], Delete={"Objects": [{"Key": imagen[k]} for k in ("miniatura", "revisada", "publica") if k in imagen]})
         return {"foto": foto, "estado": "BORRADA"}
 
     # Lo que quedó en cuarentena no se le muestra a Nova ni se vectoriza
@@ -220,13 +220,13 @@ def lambda_handler(event, _context):
         Key={"PK": pk, "SK": f"F#{foto}"},
         UpdateExpression=("SET estado = :e, fecha_orden = :fo, fecha_toma = :ft, etiquetas = :et, etiquetas_en = :en, "
                           "texto = :tx, descripcion = :de, moderacion = :mo, ancho = :an, alto = :al, camara = :ca, gps = :gp, gps_fuente = :gf, lugar = :lu, "
-                          "miniatura = :mi, revisada = :rv, claves = :cl, personas = :pe, caras = :cr REMOVE expira"),
+                          "miniatura = :mi, revisada = :rv, publica = :pu, claves = :cl, personas = :pe, caras = :cr REMOVE expira"),
         ExpressionAttributeValues={
             ":e": estado, ":fo": fecha_orden, ":ft": imagen.get("fecha_toma"),
             ":et": nombres_es, ":en": nombres_en, ":tx": "\n".join(textos), ":de": descripcion, ":mo": bloqueo,
             ":an": imagen["ancho"], ":al": imagen["alto"], ":ca": imagen.get("camara"),
             ":gp": {k: Decimal(str(v)) for k, v in gps.items()} if gps else None, ":gf": fuente, ":lu": lugar,
-            ":mi": imagen["miniatura"], ":rv": imagen["revisada"], ":cl": list(claves),
+            ":mi": imagen["miniatura"], ":rv": imagen["revisada"], ":pu": imagen.get("publica"), ":cl": list(claves),
             ":pe": list(dict.fromkeys(p for p, _ in personas)), ":cr": caras,
         },
     )

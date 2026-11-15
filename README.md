@@ -18,7 +18,7 @@ Navegador ──Cognito (login)──► API Gateway HTTP (JWT) ──► Lambda
                                                                              Nova Multimodal Embeddings ──► S3 Vectors
                                                                              Rekognition IndexFaces + Users (si activó personas)
 Web: S3 privado ◄── CloudFront + OAC          Mapa: MapLibre + mosaicos de Amazon Location (API key solo para la web)
-     album.html ──► GET /compartidos/{token} (sin cuenta) ──► URLs de CloudFront firmadas (key group) ──► fotos/ y miniaturas/
+     album.html ──► GET /compartidos/{token} (sin cuenta) ──► URLs de CloudFront firmadas (key group) ──► publicas/ y miniaturas/
 ```
 
 | Carpeta | Contenido |
@@ -80,8 +80,9 @@ Destruir: `terraform destroy` (los buckets tienen `force_destroy`).
   30 días: `album.html#<token>`. El token va en el fragmento, que no viaja en el Referer ni llega al servidor web. La
   ruta pública `GET /compartidos/{token}` es la única sin JWT y devuelve solo nombre, descripción, fecha y URLs de
   CloudFront firmadas por 1 hora. Por eso revocar el enlace corta también lo que ya estaba abierto. El bucket de fotos
-  sigue privado: CloudFront (OAC) solo lee `fotos/` y `miniaturas/`, y esos comportamientos exigen firma del key group
-  (sin firma, 403). La llave privada RSA la genera Terraform (`tls_private_key`), va a SSM como SecureString y la
+  sigue privado: CloudFront (OAC) solo lee `publicas/` y `miniaturas/`, y esos comportamientos exigen firma del key group
+  (sin firma, 403). `fotos/` (el archivo subido, con su EXIF y GPS) nunca sale por ahí: `procesar` escribe en
+  `publicas/` una copia re-codificada sin metadatos de hasta 2048 px. La llave privada RSA la genera Terraform (`tls_private_key`), va a SSM como SecureString y la
   API la lee al arrancar. También queda en el tfstate: el bucket es privado y cifrado, y la llave solo sirve para leer fotos.
   La firma usa `rsa` (puro Python) en la capa `firmas`, construida por `scripts/capa.sh` como la de Pillow.
 - Concurrencia de Lambda de la cuenta = 10 compartida: Step Functions reintenta con espera si se llena.

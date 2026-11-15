@@ -1,10 +1,11 @@
 """Paso del flujo de Step Functions: miniatura + metadatos EXIF de una foto.
 
 Entrada: {"bucket": ..., "key": "originales/<usuario>/<foto>.<ext>"}
-Salida:  {"ancho", "alto", "fecha_toma", "camara", "gps", "miniatura", "revisada"}
+Salida:  {"ancho", "alto", "fecha_toma", "camara", "gps", "miniatura", "revisada", "publica"}
 
 Copia los bytes que leyó a fotos/ y borra el original: Rekognition analiza esa copia y la app solo
 sirve esa copia, así que reusar la URL prefirmada para sobrescribir originales/ no cambia lo mostrado.
+publicas/ es la versión para álbumes compartidos: re-codificada, sin EXIF (ni GPS ni cámara) y de 2048 px como máximo.
 """
 import io
 import logging
@@ -19,6 +20,7 @@ log.setLevel(logging.INFO)
 s3 = boto3.client("s3")
 
 LADO_MINIATURA = 480
+LADO_PUBLICA = 2048
 Image.MAX_IMAGE_PIXELS = 60_000_000  # ~60 MP; más grande se trata como imagen maliciosa (bomba de descompresión)
 
 
@@ -66,16 +68,19 @@ def lambda_handler(event, _context):
     # Respeta la orientación de la cámara; el EXIF se descarta en la miniatura (no expone el GPS)
     img = ImageOps.exif_transpose(img)
     ancho, alto = img.size
-    img.thumbnail((LADO_MINIATURA, LADO_MINIATURA))
-    salida = io.BytesIO()
-    img.convert("RGB").save(salida, "JPEG", quality=82, optimize=True)
-
     resto = key.split("/", 1)[1]
-    miniatura = "miniaturas/" + resto.rsplit(".", 1)[0] + ".jpg"
-    s3.put_object(Bucket=bucket, Key=miniatura, Body=salida.getvalue(), ContentType="image/jpeg")
+    base = resto.rsplit(".", 1)[0] + ".jpg"
+
+    # Pillow no copia el EXIF al guardar si no se le pasa: las dos versiones salen limpias
+    for prefijo, lado, calidad in (("publicas/", LADO_PUBLICA, 88), ("miniaturas/", LADO_MINIATURA, 82)):
+        img.thumbnail((lado, lado))
+        salida = io.BytesIO()
+        img.convert("RGB").save(salida, "JPEG", quality=calidad, optimize=True)
+        s3.put_object(Bucket=bucket, Key=prefijo + base, Body=salida.getvalue(), ContentType="image/jpeg")
+    miniatura, publica = "miniaturas/" + base, "publicas/" + base
     revisada = "fotos/" + resto
     s3.put_object(Bucket=bucket, Key=revisada, Body=original, ContentType=objeto.get("ContentType", "image/jpeg"))
     s3.delete_object(Bucket=bucket, Key=key)
 
     return {"ancho": ancho, "alto": alto, "fecha_toma": fecha, "camara": camara, "gps": gps,
-            "miniatura": miniatura, "revisada": revisada}
+            "miniatura": miniatura, "revisada": revisada, "publica": publica}

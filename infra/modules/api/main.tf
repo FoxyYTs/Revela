@@ -110,7 +110,7 @@ resource "aws_iam_role_policy" "api" {
       },
       # Las URLs prefirmadas valen con los permisos del rol que las firma
       { Effect = "Allow", Action = ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"], Resource = "${var.bucket_arn}/originales/*" },
-      { Effect = "Allow", Action = ["s3:GetObject", "s3:DeleteObject"], Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*"] },
+      { Effect = "Allow", Action = ["s3:GetObject", "s3:DeleteObject"], Resource = ["${var.bucket_arn}/miniaturas/*", "${var.bucket_arn}/fotos/*", "${var.bucket_arn}/publicas/*"] },
       { Effect = "Allow", Action = "geo:DescribeKey", Resource = var.mapa_key_arn },
       # Llave privada para firmar URLs de CloudFront (cifrada con la llave administrada aws/ssm)
       { Effect = "Allow", Action = "ssm:GetParameter", Resource = var.llave_arn },

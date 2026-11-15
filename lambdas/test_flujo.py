@@ -632,7 +632,12 @@ def test_albumes_y_enlace_compartido(aws, traductor, llave_cdn, monkeypatch):
     foto = compartido["fotos"][0]
     assert set(foto) == {"miniatura", "original", "descripcion", "fecha"}
     url = urlsplit(foto["original"])
-    assert url.netloc == "cdn.test" and url.path == f"/fotos/{USUARIO}/{playa}.jpg"
+    # Nunca el archivo subido (fotos/ conserva el EXIF con el GPS): la copia re-codificada de publicas/, sin metadatos
+    assert url.netloc == "cdn.test" and url.path == f"/publicas/{USUARIO}/{playa}.jpg"
+    publica = Image.open(io.BytesIO(boto3.client("s3").get_object(Bucket="revela-test", Key=url.path[1:])["Body"].read()))
+    assert not publica.getexif() and publica.size == (800, 1200)  # orientada y sin GPS ni cámara
+    original = Image.open(io.BytesIO(boto3.client("s3").get_object(Bucket="revela-test", Key=f"fotos/{USUARIO}/{playa}.jpg")["Body"].read()))
+    assert original.getexif().get_ifd(ExifTags.IFD.GPSInfo)  # el de la galería privada sí lo tiene
     q = {k: v[0] for k, v in parse_qs(url.query).items()}
     assert q["Key-Pair-Id"] == "K123"
     vence = api.datetime.fromtimestamp(int(q["Expires"]), api.timezone.utc)

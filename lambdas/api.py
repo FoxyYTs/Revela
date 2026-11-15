@@ -296,7 +296,7 @@ def borrar(usuario, foto):
     vectores().delete_vectors(vectorBucketName=VECTORES, indexName="fotos", keys=[foto])  # primero: si falla, no queda nada a medias
     if item.get("caras"):
         rostros.borrar(usuario, item["caras"])
-    s3.delete_objects(Bucket=BUCKET, Delete={"Objects": [{"Key": k} for k in (item["original"], item.get("revisada"), item.get("miniatura")) if k]})
+    s3.delete_objects(Bucket=BUCKET, Delete={"Objects": [{"Key": k} for k in (item["original"], item.get("revisada"), item.get("miniatura"), item.get("publica")) if k]})
     with tabla.batch_writer() as lote:
         for sk in item.get("claves", []):
             lote.delete_item(Key={"PK": pk, "SK": sk})
@@ -572,7 +572,8 @@ def dejar_de_compartir(usuario, album):
 
 
 def ver_compartido(token):
-    """Ruta pública: solo lo necesario para mirar el álbum (sin GPS, etiquetas ni personas)."""
+    """Ruta pública: solo lo necesario para mirar el álbum (sin GPS, etiquetas ni personas). Nunca se firma el archivo
+    subido (fotos/ conserva el EXIF con el GPS): la copia limpia de publicas/ o, en fotos viejas sin ella, la miniatura."""
     ahora = datetime.now(timezone.utc)
     c = tabla.get_item(Key={"PK": f"C#{token}", "SK": "C"}).get("Item") if re.fullmatch(r"[A-Za-z0-9_-]{32}", token) else None
     item = c and tabla.get_item(Key={"PK": f"U#{c['usuario']}", "SK": f"ALBUM#{c['album']}"}).get("Item")
@@ -580,7 +581,7 @@ def ver_compartido(token):
     if not item or item.get("enlace") != token or int(c["expira"]) <= ahora.timestamp():
         raise ErrorCliente(404, "Este enlace no existe o ya venció")
     vence = min(ahora + timedelta(seconds=VIGENCIA_CDN), datetime.fromtimestamp(int(c["expira"]), timezone.utc))
-    fotos = [{"miniatura": firmar_cdn(f["miniatura"], vence), "original": firmar_cdn(f.get("revisada", f["original"]), vence),
+    fotos = [{"miniatura": firmar_cdn(f["miniatura"], vence), "original": firmar_cdn(f.get("publica") or f["miniatura"], vence),
               "descripcion": f.get("descripcion"), "fecha": f["fecha_orden"].split("#")[0]}
              for f in leer_fotos(f"U#{c['usuario']}", item.get("fotos", [])).values() if f["estado"] == "LISTA"]
     return 200, {"nombre": item["nombre"], "fotos": fotos}

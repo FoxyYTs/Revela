@@ -156,7 +156,7 @@ resource "aws_cloudfront_distribution" "web" {
   }
 
   dynamic "ordered_cache_behavior" {
-    for_each = ["miniaturas/*", "fotos/*"]
+    for_each = ["miniaturas/*", "publicas/*"] # nunca fotos/: conserva el EXIF con el GPS
     content {
       path_pattern           = ordered_cache_behavior.value
       target_origin_id       = "fotos"
@@ -214,7 +214,7 @@ resource "aws_s3_bucket_policy" "fotos" {
       Effect    = "Allow"
       Principal = { Service = "cloudfront.amazonaws.com" }
       Action    = "s3:GetObject"
-      Resource  = ["${var.fotos_arn}/miniaturas/*", "${var.fotos_arn}/fotos/*"]
+      Resource  = ["${var.fotos_arn}/miniaturas/*", "${var.fotos_arn}/publicas/*"]
       Condition = { StringEquals = { "AWS:SourceArn" = aws_cloudfront_distribution.web.arn } }
     }]
   })
