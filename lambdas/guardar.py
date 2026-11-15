@@ -23,7 +23,7 @@ from botocore.exceptions import ClientError
 log = logging.getLogger()
 log.setLevel(logging.INFO)
 
-TABLA = os.environ.get("TABLA", "jadg-revela-fotos")
+TABLA = os.environ.get("TABLA", "jyj-revela-fotos")
 UMBRAL_MODERACION = float(os.environ.get("UMBRAL_MODERACION", "80"))
 # Categorías de primer nivel de Rekognition que mandan la foto a cuarentena (traje de baño, alcohol, etc. no)
 BLOQUEAR = {"Explicit", "Non-Explicit Nudity of Intimate parts and Kissing", "Violence", "Visually Disturbing", "Hate Symbols"}

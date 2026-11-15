@@ -25,8 +25,8 @@ from boto3.dynamodb.conditions import Key
 log = logging.getLogger()
 log.setLevel(logging.INFO)
 
-TABLA = os.environ.get("TABLA", "jadg-revela-fotos")
-BUCKET = os.environ.get("BUCKET", "jadg-revela-fotos")
+TABLA = os.environ.get("TABLA", "jyj-revela-fotos")
+BUCKET = os.environ.get("BUCKET", "jyj-revela-fotos")
 TIPOS = {"image/jpeg": "jpg", "image/png": "png"}  # los formatos que acepta Rekognition
 MAX_BYTES = 15 * 1024 * 1024  # límite de Rekognition para imágenes en S3
 VIGENCIA_URL = 3600
@@ -36,7 +36,7 @@ EXPIRA_PENDIENTE = 24 * 3600  # una subida que nunca llega se borra sola por TTL
 # que llegan, para que pedir URLs en bucle también se frene
 SUBIDAS_DIA = int(os.environ.get("SUBIDAS_DIA", "50"))
 COLOMBIA = timezone(timedelta(hours=-5))
-MAPA_KEY = os.environ.get("MAPA_KEY", "jadg-revela-mapa")
+MAPA_KEY = os.environ.get("MAPA_KEY", "jyj-revela-mapa")
 MAX_LUGARES = 500
 # Una foto que sigue en PROCESANDO después de esto se abandonó (la subida a S3 falló) o el análisis se trabó
 ESPERA_ANALISIS = timedelta(minutes=10)

@@ -1,5 +1,5 @@
 locals {
-  prefijo = "jadg-revela"
+  prefijo = "jyj-revela"
   # Orígenes que pueden llamar la API y subir a S3: la web en CloudFront y la página servida en local
   origenes = ["https://${module.web.dominio}", "http://localhost:8000"]
 }

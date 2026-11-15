@@ -30,6 +30,6 @@ provider "aws" {
   region = "us-east-1"
 
   default_tags {
-    tags = { Proyecto = "revela", Dueno = "jadg" }
+    tags = { Proyecto = "revela", Dueno = "jyj" }
   }
 }
