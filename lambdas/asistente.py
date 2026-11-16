@@ -1,7 +1,9 @@
 """Asistente de Revela: un agente de Strands con Amazon Nova que responde pedidos en lenguaje natural
 ("las fotos con Juliana en Cartagena del año pasado") combinando las búsquedas de la API.
 
-POST /asistente {pregunta} → {respuesta, fotos, album?}
+POST /asistente {pregunta, historial?, fotos?} → {respuesta, fotos, album?}
+La Lambda no guarda la conversación: la página manda las últimas preguntas con sus respuestas y los ids de las fotos
+que está mostrando, para que "sí, haz un álbum con esas" tenga contexto.
 
 Las herramientas se crean en cada petición encerrando al usuario: el modelo nunca ve ni elige de quién son las fotos,
 y tampoco maneja ids (la última búsqueda queda en `ultimas` y de ahí salen las fotos y el álbum).
@@ -26,6 +28,8 @@ MODELO = os.environ.get("MODELO", "us.amazon.nova-2-lite-v1:0")
 PREGUNTAS_DIA = 30  # cada pregunta son 2-4 llamadas a Nova
 MAX_PREGUNTA = 300
 MAX_FOTOS = 200  # lo que cabe en un álbum
+MAX_HISTORIAL = 3  # turnos anteriores que se le pasan al modelo
+MAX_RESPUESTA = 1000
 AL_MODELO = 15  # resúmenes que ve el modelo para poder comentar las fotos; el resto solo se cuenta
 
 INSTRUCCION = """Eres el asistente de Revela, una galería de fotos. Hoy es {hoy} (hora de Colombia).
@@ -37,6 +41,9 @@ Ayudas a encontrar fotos del usuario con tus herramientas:
 - lugares() lista las ciudades donde hay fotos.
 - crear_album guarda en un álbum las fotos de la última búsqueda; úsalo solo si el usuario pide un álbum.
 Las fotos que encuentres se le muestran al usuario debajo de tu respuesta: no las enumeres ni inventes fotos.
+Si el usuario se refiere a "esas fotos", son las de la última búsqueda: no vuelvas a buscar.
+Si una búsqueda no da resultados, intenta tú mismo lo razonable (revisar los nombres, quitar un filtro) antes de
+responder. Haz una pregunta solo si de verdad falta un dato, y si el usuario acepta lo que propusiste, hazlo ya.
 Responde en español, en una a tres frases, diciendo qué encontraste o por qué no hubo resultados."""
 
 
@@ -77,7 +84,7 @@ def herramientas(usuario, estado):
         for fecha in (desde, hasta):
             if fecha:
                 datetime.strptime(fecha, "%Y-%m-%d")  # ValueError le llega al modelo para que la corrija
-        listas = []
+        listas, filtros = [], []
         if personas:
             por_nombre = {}
             for i in api.consultar(pk, "PERSONA#"):
@@ -88,10 +95,13 @@ def herramientas(usuario, estado):
                     estado["ultimas"] = []
                     return f"No hay ninguna persona llamada «{nombre}»."
                 listas.append([f for p in ids for f in ids_de(f"P#{p}#")])
+                filtros.append(f"persona {nombre}")
         if lugar:
             listas.append(ids_de(f"L#{normalizar(lugar)}#"))
+            filtros.append(f"lugar {lugar}")
         if texto and normalizar(texto):
             listas.append([f["id"] for f in api.buscar(usuario, normalizar(texto)[:200], texto[:200])])
+            filtros.append(f"texto {texto}")
         if not listas:
             if not (desde or hasta):
                 raise ValueError("Da al menos un filtro")
@@ -99,6 +109,7 @@ def herramientas(usuario, estado):
             r = api.tabla.query(IndexName="por-fecha", ScanIndexForward=False, Limit=MAX_FOTOS,
                                 KeyConditionExpression=Key("PK").eq(pk) & Key("fecha_orden").between(desde or "0", (hasta or "9") + "~"))
             listas.append([i["SK"][2:] for i in r["Items"]])
+            filtros.append("fechas")
         comunes = set.intersection(*map(set, listas))
         ids = [i for i in dict.fromkeys(listas[0]) if i in comunes][:MAX_FOTOS]
         items = [i for i in api.leer_fotos(pk, ids).values() if i["estado"] == "LISTA"
@@ -106,7 +117,11 @@ def herramientas(usuario, estado):
         estado["ultimas"] = [i["SK"][2:] for i in items]
         vistas = [{"fecha": i["fecha_orden"][:10], "lugar": (i.get("lugar") or {}).get("nombre"), "descripcion": i.get("descripcion")}
                   for i in items[:AL_MODELO]]
-        return json.dumps({"encontradas": len(items), "fotos": vistas}, ensure_ascii=False)
+        resultado = {"encontradas": len(items), "fotos": vistas}
+        if not items and (len(listas) > 1 or (desde or hasta) and filtros[-1:] != ["fechas"]):
+            # Nova Lite casi no reintenta solo: decirle qué filtro sobra le permite proponer algo concreto
+            resultado["cada_filtro_por_separado"] = {f: len(set(l)) for f, l in zip(filtros, listas)}
+        return json.dumps(resultado, ensure_ascii=False)
 
     @tool
     def crear_album(nombre: str) -> str:
@@ -125,9 +140,19 @@ def herramientas(usuario, estado):
     return [personas, lugares, buscar_fotos, crear_album]
 
 
-def preguntar(usuario, pregunta):
-    estado = {"ultimas": []}
-    agente = Agent(model=BedrockModel(model_id=MODELO, temperature=0.2), callback_handler=None,
+def leer_historial(valor):
+    """[{pregunta, respuesta}] → mensajes de Strands; solo texto, así que no puede colar llamadas a herramientas."""
+    if not isinstance(valor, list) or len(valor) > MAX_HISTORIAL or not all(
+            isinstance(t, dict) and isinstance(t.get("pregunta"), str) and isinstance(t.get("respuesta"), str)
+            and 0 < len(t["pregunta"]) <= MAX_PREGUNTA and 0 < len(t["respuesta"]) <= MAX_RESPUESTA for t in valor):
+        raise ErrorCliente(400, "Historial inválido")
+    return [{"role": rol, "content": [{"text": t[campo]}]} for t in valor
+            for rol, campo in (("user", "pregunta"), ("assistant", "respuesta"))]
+
+
+def preguntar(usuario, pregunta, historial=(), fotos=()):
+    estado = {"ultimas": list(fotos)}  # crear_album filtra que sean propias y estén listas
+    agente = Agent(model=BedrockModel(model_id=MODELO, temperature=0.2), callback_handler=None, messages=list(historial),
                    system_prompt=INSTRUCCION.format(hoy=datetime.now(api.COLOMBIA).strftime("%Y-%m-%d")),
                    tools=herramientas(usuario, estado))
     respuesta = str(agente(pregunta)).strip()
@@ -146,9 +171,11 @@ def lambda_handler(event, _context):
         pregunta = " ".join(str(cuerpo.get("pregunta") or "").split()) if isinstance(cuerpo, dict) else ""
         if not pregunta or len(pregunta) > MAX_PREGUNTA:
             raise ErrorCliente(400, f"Escribe una pregunta de hasta {MAX_PREGUNTA} caracteres")
+        historial = leer_historial(cuerpo.get("historial", []))
+        fotos = api.ids_validos(cuerpo.get("fotos", []))
         api.descontar_cupo(usuario, "preguntas", PREGUNTAS_DIA, f"Llegaste al límite de {PREGUNTAS_DIA} preguntas por día")
         try:
-            return responder(200, preguntar(usuario, pregunta))
+            return responder(200, preguntar(usuario, pregunta, historial, fotos))
         except Exception:  # noqa: BLE001 — Bedrock caído o sin cupo: el resto de Revela sigue funcionando
             log.exception("El asistente falló")
             return responder(502, {"error": "El asistente no está disponible; prueba con el buscador"})

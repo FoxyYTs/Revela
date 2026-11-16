@@ -705,6 +705,8 @@ def test_asistente_combina_filtros(aws):
 
     r = json.loads(buscar_fotos(personas=["juliana"], lugar="cartagena", desde="2025-01-01", hasta="2025-12-31"))
     assert r["encontradas"] == 1 and r["fotos"][0]["fecha"] == "2025-12-24" and estado["ultimas"] == [buena]
+    vacia = json.loads(buscar_fotos(personas=["Juliana"], lugar="Medellín", desde="2024-01-01", hasta="2024-12-31"))
+    assert vacia["encontradas"] == 0 and vacia["cada_filtro_por_separado"] == {"persona Juliana": 3, "lugar Medellín": 1}
     assert json.loads(buscar_fotos(lugar="Cartagena"))["encontradas"] == 3
     assert estado["ultimas"] == [buena, sin_ella, vieja]  # de la más nueva a la más vieja
     assert json.loads(buscar_fotos(desde="2025-01-01"))["encontradas"] == 3  # solo fechas: por el índice
@@ -724,8 +726,9 @@ def test_asistente_handler(aws, monkeypatch):
     import asistente
 
     class AgenteFalso:
-        def __init__(self, tools, **_):
-            self.buscar = tools[2]
+        def __init__(self, tools, messages, **_):
+            self.buscar, self.album = tools[2], tools[3]
+            AgenteFalso.mensajes = messages
 
         def __call__(self, pregunta):
             self.buscar(lugar="Cartagena")
@@ -745,8 +748,19 @@ def test_asistente_handler(aws, monkeypatch):
     assert status == 200 and r["respuesta"] == "Encontré una foto en Cartagena."
     assert [f["id"] for f in r["fotos"]] == ["1" * 32] and r["fotos"][0]["miniatura"].startswith("https://") and "album" not in r
 
+    # Segundo turno: llega lo hablado y las fotos que se ven, y "haz un álbum con esas" las usa sin buscar de nuevo
+    monkeypatch.setattr(AgenteFalso, "__call__", lambda self, p: self.album(nombre="Cartagena"))
+    turno = {"pregunta": "¿fotos en Cartagena?", "respuesta": r["respuesta"]}
+    status, r2 = preguntar({"pregunta": "sí, haz un álbum con esas", "historial": [turno], "fotos": ["1" * 32]})
+    assert status == 200 and r2["album"]["nombre"] == "Cartagena" and [f["id"] for f in r2["fotos"]] == ["1" * 32]
+    assert AgenteFalso.mensajes == [{"role": "user", "content": [{"text": "¿fotos en Cartagena?"}]},
+                                    {"role": "assistant", "content": [{"text": r["respuesta"]}]}]
+    assert preguntar({"pregunta": "sí", "historial": [{"pregunta": "x"}]})[0] == 400
+    assert preguntar({"pregunta": "sí", "historial": [turno] * 4})[0] == 400
+    assert preguntar({"pregunta": "sí", "fotos": ["../x"]})[0] == 400
+
     monkeypatch.setattr(AgenteFalso, "__call__", lambda self, p: 1 / 0)
     assert preguntar({"pregunta": "hola"})[0] == 502  # Bedrock caído: error claro, sin traza al usuario
-    for _ in range(asistente.PREGUNTAS_DIA - 2):
+    for _ in range(asistente.PREGUNTAS_DIA - 3):
         preguntar({"pregunta": "hola"})
     assert preguntar({"pregunta": "hola"})[0] == 429

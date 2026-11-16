@@ -200,33 +200,42 @@ function buscar(q, persona = null, album = null) {
   estado.persona = persona;
   estado.album = album;
   estado.eligiendo = estado.uniendo = false;
-  estado.respuesta = null;
+  estado.respuesta = estado.charla = null;
+  $("#q").placeholder = PISTA;
   vista("fotos");
   cargar();
 }
 
-// El asistente (agente de Strands) entiende pedidos completos y devuelve una respuesta corta con las fotos
+// El asistente (agente de Strands) entiende pedidos completos y devuelve una respuesta corta con las fotos.
+// La Lambda no recuerda nada: mientras dure la conversación se le mandan los últimos turnos y las fotos en pantalla
+const PISTA = $("#q").placeholder;
 async function preguntar(texto) {
   texto = texto.trim();
   if (!texto) return $("#q").focus();
-  Object.assign(estado, { q: texto, persona: null, album: null, eligiendo: false, uniendo: false, siguiente: null, fotos: [],
+  const historial = estado.charla || [], fotos = estado.charla ? estado.fotos.map((f) => f.id).slice(0, 200) : [];
+  const turno = estado.turno = (estado.turno || 0) + 1;
+  // El título sigue siendo la primera pregunta: un "sí" solo no dice nada
+  Object.assign(estado, { charla: historial, q: historial[0]?.pregunta || texto, persona: null, album: null, eligiendo: false, uniendo: false, siguiente: null, fotos: [],
                           respuesta: "Pensando…" });
   vista("fotos");
   pintar();
   try {
-    const r = await api("POST", "/asistente", { pregunta: texto });
-    if (estado.respuesta !== "Pensando…" || estado.q !== texto) return;  // mientras tanto buscó otra cosa
-    Object.assign(estado, { fotos: r.fotos, respuesta: r.respuesta });
+    const r = await api("POST", "/asistente", { pregunta: texto, historial, fotos });
+    if (turno !== estado.turno || estado.respuesta !== "Pensando…") return;  // mientras tanto buscó o preguntó otra cosa
+    Object.assign(estado, { fotos: r.fotos, respuesta: r.respuesta,
+                            charla: [...historial, { pregunta: texto, respuesta: r.respuesta.slice(0, 1000) }].slice(-3) });
+    $("#q").value = "";
+    $("#q").placeholder = "Responde al asistente o pregúntale otra cosa";
     pintar();
     if (r.album) cargarAlbumes().catch(() => {});
   } catch (e) {
-    if (e.message !== "sesión cerrada" && estado.q === texto) { estado.respuesta = e.message; pintar(); }
+    if (e.message !== "sesión cerrada" && turno === estado.turno && estado.respuesta === "Pensando…") { estado.respuesta = e.message; pintar(); }
   }
 }
 
-$("#form-buscar").onsubmit = (e) => { e.preventDefault(); $("#q").blur(); buscar($("#q").value); };
+$("#form-buscar").onsubmit = (e) => { e.preventDefault(); $("#q").blur(); estado.charla ? preguntar($("#q").value) : buscar($("#q").value); };
 $("#btn-preguntar").onclick = () => preguntar($("#q").value);
-$("#q").oninput = () => { if (!$("#q").value && estado.q) buscar(""); };
+$("#q").oninput = () => { if (!$("#q").value && estado.q && !estado.charla) buscar(""); };
 
 // ---------- Explorar: personas, lugares y cosas ----------
 

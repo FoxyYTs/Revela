@@ -72,7 +72,11 @@ encontró aparecen debajo, como en cualquier búsqueda, y se pueden pasar a un �
 - Las herramientas se crean en cada petición con el usuario del JWT ya puesto. El modelo no puede pedir fotos de otra
   persona y nunca maneja ids.
 - Tope: 30 preguntas por usuario al día. En local responde en 2-3 s.
-- Cada pregunta es independiente: el asistente no recuerda las anteriores.
+- **Conversación:** la Lambda no guarda nada. Mientras la conversación sigue abierta, la página manda los últimos 3
+  turnos (pregunta y respuesta, solo texto) y los ids de las fotos en pantalla. Así se pueden contestar sus preguntas
+  («sí») o pedir «haz un álbum con esas». Enter le responde al asistente; ← o una búsqueda normal la terminan.
+- Si una búsqueda con varios filtros queda vacía, `buscar_fotos` le dice al modelo cuántas fotos da cada filtro por
+  separado. Así propone algo concreto («Juliana sale en 2 fotos, pero ninguna en Medellín»).
 
 ## Operación (módulo `operacion` y ajustes en los demás)
 
