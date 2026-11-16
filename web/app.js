@@ -157,6 +157,7 @@ function entrar() {
   $("#app").classList.remove("oculto");
   vista("fotos");
   cargar();
+  cargarRecuerdos().catch(() => {});
 }
 
 function vista(nombre) {
@@ -678,6 +679,18 @@ $("#v-escena").addEventListener("pointerup", (e) => {
 const casilla = $("#usar-ubicacion");
 try { casilla.checked = localStorage.getItem("revela.ubicacion") !== "no"; } catch { casilla.checked = true; }
 casilla.onchange = () => { try { localStorage.setItem("revela.ubicacion", casilla.checked ? "si" : "no"); } catch {} };
+
+// ---------- Recuerdos por correo ----------
+
+// La preferencia vive en el servidor: la Lambda diaria solo escribe a quien la activó
+const recuerdos = $("#recibir-recuerdos");
+async function cargarRecuerdos() { recuerdos.checked = (await api("GET", "/recuerdos")).activo; }
+recuerdos.onchange = async () => {
+  try {
+    recuerdos.checked = (await api(recuerdos.checked ? "PUT" : "DELETE", "/recuerdos")).activo;
+    aviso(recuerdos.checked ? "Listo: te llegará un correo cuando haya fotos de este día en años anteriores" : "Ya no te enviaremos recuerdos");
+  } catch (e) { recuerdos.checked = !recuerdos.checked; if (e.message !== "sesión cerrada") aviso(e.message); }
+};
 
 function miUbicacion() {
   if (!casilla.checked || !navigator.geolocation) return Promise.resolve(null);

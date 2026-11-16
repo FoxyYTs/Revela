@@ -18,6 +18,7 @@ GET    /albumes       → álbumes del usuario;  POST /albumes {nombre} → crea
 GET    /albumes/{id}  → el álbum con sus fotos;  PUT {nombre?, agregar?, quitar?};  DELETE lo borra (y su enlace)
 POST   /albumes/{id}/enlace {dias} → enlace para verlo sin cuenta;  DELETE lo revoca
 GET    /compartidos/{token} (pública) → el álbum compartido con URLs de CloudFront firmadas por una hora
+GET    /recuerdos     → si recibe recuerdos por correo;  PUT los activa;  DELETE los apaga
 POST   /asistente     → lo atiende otra Lambda (asistente.py): agente de Strands que combina estas búsquedas
 """
 import base64
@@ -265,7 +266,8 @@ def leer_fotos(pk, ids):
 
 def consultar(pk, prefijo, **extra):
     """Todos los items de la partición del usuario cuyo SK empieza por prefijo, paginando."""
-    consulta = {"KeyConditionExpression": Key("PK").eq(pk) & Key("SK").begins_with(prefijo), **extra}
+    condicion = Key("PK").eq(pk) & Key("SK").begins_with(prefijo) if prefijo else Key("PK").eq(pk)  # sin prefijo: toda la partición
+    consulta = {"KeyConditionExpression": condicion, **extra}
     while True:
         r = tabla.query(**consulta)
         yield from r["Items"]
@@ -373,6 +375,27 @@ def desactivar_personas(usuario):
         tabla.update_item(Key={"PK": pk, "SK": i["SK"]}, UpdateExpression="SET claves = :cl REMOVE personas, caras",
                           ExpressionAttributeValues={":cl": [c for c in i.get("claves", []) if not c.startswith("P#")]})
     return personas(usuario)
+
+
+def recuerdos(usuario):
+    # Partición propia: la Lambda diaria lista a los suscritos con un Query, sin recorrer la tabla
+    activo = "Item" in tabla.get_item(Key={"PK": "RECUERDOS", "SK": usuario})
+    return 200, {"activo": activo}
+
+
+def activar_recuerdos(usuario):
+    tabla.put_item(Item={"PK": "RECUERDOS", "SK": usuario, "desde": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")})
+    return 200, {"activo": True}
+
+
+def desactivar_recuerdos(usuario):
+    tabla.delete_item(Key={"PK": "RECUERDOS", "SK": usuario})
+    return 200, {"activo": False}
+
+
+def album_igual(usuario, fotos):
+    """El álbum que ya tiene exactamente esas fotos, para no crear uno repetido."""
+    return next((i for i in consultar(f"U#{usuario}", "ALBUM#") if set(i.get("fotos", [])) == set(fotos)), None)
 
 
 def editar_persona(usuario, persona, cuerpo):
@@ -634,6 +657,12 @@ def lambda_handler(event, _context):
             return responder(*lugares(usuario))
         if ruta == "GET /mapa":
             return responder(*mapa())
+        if ruta == "GET /recuerdos":
+            return responder(*recuerdos(usuario))
+        if ruta == "PUT /recuerdos":
+            return responder(*activar_recuerdos(usuario))
+        if ruta == "DELETE /recuerdos":
+            return responder(*desactivar_recuerdos(usuario))
         if ruta == "GET /personas":
             return responder(*personas(usuario))
         if ruta == "PUT /personas":

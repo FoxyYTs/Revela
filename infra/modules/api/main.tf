@@ -75,6 +75,15 @@ variable "origenes" {
   type = list(string)
 }
 
+variable "correo" {
+  description = "Remitente de los recuerdos (y destinatario mientras SES esté en sandbox)"
+  type        = string
+}
+
+variable "pool_id" {
+  type = string
+}
+
 locals {
   modelo = "us.amazon.nova-2-lite-v1:0"
   # El asistente importa api.py, así que necesita el mismo entorno
@@ -264,7 +273,7 @@ resource "aws_apigatewayv2_route" "rutas" {
   for_each = toset(["POST /subidas", "GET /fotos", "GET /fotos/{id}", "DELETE /fotos/{id}", "GET /etiquetas", "GET /lugares", "GET /mapa",
     "GET /personas", "PUT /personas", "DELETE /personas", "PUT /personas/{id}", "POST /fotos/{id}/caras", "POST /personas/{id}/unir",
     "GET /albumes", "POST /albumes", "GET /albumes/{id}", "PUT /albumes/{id}", "DELETE /albumes/{id}",
-  "POST /albumes/{id}/enlace", "DELETE /albumes/{id}/enlace"])
+  "POST /albumes/{id}/enlace", "DELETE /albumes/{id}/enlace", "GET /recuerdos", "PUT /recuerdos", "DELETE /recuerdos"])
   api_id             = aws_apigatewayv2_api.this.id
   route_key          = each.value
   target             = "integrations/${aws_apigatewayv2_integration.api.id}"
@@ -332,4 +341,110 @@ output "funcion" {
 
 output "url" {
   value = aws_apigatewayv2_api.this.api_endpoint
+}
+
+# ---------- Recuerdos: cada mañana, fotos de este día en años anteriores → álbum + correo ----------
+
+# SES está en sandbox: al crearla, AWS manda un correo de verificación; sin confirmarlo no sale ningún recuerdo
+resource "aws_ses_email_identity" "remitente" {
+  email = var.correo
+}
+
+resource "aws_iam_role" "recuerdos" {
+  name               = "${var.prefijo}-recuerdos-role"
+  assume_role_policy = data.aws_iam_policy_document.assume_lambda.json
+}
+
+resource "aws_iam_role_policy_attachment" "recuerdos_logs" {
+  role       = aws_iam_role.recuerdos.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "recuerdos_xray" {
+  role       = aws_iam_role.recuerdos.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
+resource "aws_iam_role_policy" "recuerdos" {
+  name = "recuerdos"
+  role = aws_iam_role.recuerdos.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      { Effect = "Allow", Action = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:BatchGetItem"], Resource = [var.tabla_arn, "${var.tabla_arn}/index/por-fecha"] },
+      { Effect = "Allow", Action = "ssm:GetParameter", Resource = var.llave_arn },
+      { Effect = "Allow", Action = "ses:SendEmail", Resource = aws_ses_email_identity.remitente.arn },
+      { Effect = "Allow", Action = "cognito-idp:ListUsers", Resource = "arn:aws:cognito-idp:us-east-1:${data.aws_caller_identity.actual.account_id}:userpool/${var.pool_id}" },
+    ]
+  })
+}
+
+resource "aws_cloudwatch_log_group" "recuerdos" {
+  name              = "/aws/lambda/${var.prefijo}-recuerdos"
+  retention_in_days = 7
+}
+
+resource "aws_lambda_function" "recuerdos" {
+  function_name = "${var.prefijo}-recuerdos"
+  role          = aws_iam_role.recuerdos.arn
+  runtime       = "python3.12"
+  handler       = "recuerdos.lambda_handler"
+  tracing_config {
+    mode = "Active"
+  }
+  layers           = [aws_lambda_layer_version.firmas.arn] # firma las miniaturas del correo por 7 días
+  filename         = var.zip
+  source_code_hash = var.zip_hash
+  timeout          = 60
+  memory_size      = 256
+
+  environment {
+    variables = merge(local.entorno, { REMITENTE = var.correo, POOL = var.pool_id })
+  }
+
+  depends_on = [aws_cloudwatch_log_group.recuerdos, aws_iam_role_policy_attachment.recuerdos_logs]
+}
+
+data "aws_iam_policy_document" "assume_scheduler" {
+  statement {
+    actions = ["sts:AssumeRole"]
+    principals {
+      type        = "Service"
+      identifiers = ["scheduler.amazonaws.com"]
+    }
+  }
+}
+
+resource "aws_iam_role" "programador" {
+  name               = "${var.prefijo}-programador-role"
+  assume_role_policy = data.aws_iam_policy_document.assume_scheduler.json
+}
+
+resource "aws_iam_role_policy" "programador" {
+  name = "invocar-recuerdos"
+  role = aws_iam_role.programador.id
+  policy = jsonencode({
+    Version   = "2012-10-17"
+    Statement = [{ Effect = "Allow", Action = "lambda:InvokeFunction", Resource = aws_lambda_function.recuerdos.arn }]
+  })
+}
+
+resource "aws_scheduler_schedule" "recuerdos" {
+  name                         = "${var.prefijo}-recuerdos"
+  schedule_expression          = "cron(0 7 * * ? *)"
+  schedule_expression_timezone = "America/Bogota"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.recuerdos.arn
+    role_arn = aws_iam_role.programador.arn
+    input    = "{}"
+  }
+}
+
+output "funcion_recuerdos" {
+  value = aws_lambda_function.recuerdos.function_name
 }

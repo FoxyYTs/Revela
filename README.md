@@ -19,14 +19,15 @@ Navegador ──Cognito (login)──► API Gateway HTTP (JWT) ──► Lambda
                                                                              Rekognition IndexFaces + Users (si activó personas)
 Web: S3 privado ◄── CloudFront + OAC          Mapa: MapLibre + mosaicos de Amazon Location (API key solo para la web)
      album.html ──► GET /compartidos/{token} (sin cuenta) ──► URLs de CloudFront firmadas (key group) ──► publicas/ y miniaturas/
+     EventBridge Scheduler (7:00 Colombia) ──► Lambda recuerdos ──► álbum «Recuerdos del …» + correo con SES
      ✦ Preguntar ──► POST /asistente ──► Lambda asistente (Strands + Nova 2 Lite) ──► herramientas sobre api.py
 ```
 
 | Carpeta | Contenido |
 |---|---|
-| `lambdas/` | `api.py`, `asistente.py`, `procesar.py`, `guardar.py`, `caras.py` y `test_flujo.py` (moto) |
+| `lambdas/` | `api.py`, `asistente.py`, `recuerdos.py`, `procesar.py`, `guardar.py`, `caras.py` y `test_flujo.py` (moto) |
 | `web/` | `index.html` + `app.js`, sin build; la configuración llega en `config.js` (la escribe Terraform) |
-| `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web`, `operacion` (96 recursos) |
+| `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web`, `operacion` (109 recursos) |
 | `scripts/capa.sh` | Construye las capas (Pillow, rsa, Strands); Terraform la llama sola |
 
 ## Pruebas
@@ -78,14 +79,34 @@ encontró aparecen debajo, como en cualquier búsqueda, y se pueden pasar a un �
 - Si una búsqueda con varios filtros queda vacía, `buscar_fotos` le dice al modelo cuántas fotos da cada filtro por
   separado. Así propone algo concreto («Juliana sale en 2 fotos, pero ninguna en Medellín»).
 
+## Recuerdos (`lambdas/recuerdos.py`)
+
+Quien marca **Recibir recuerdos por correo** en los ajustes queda en la partición `RECUERDOS` de la tabla. Cada día a
+las 7:00 (hora de Colombia), **EventBridge Scheduler** llama a la Lambda `jyj-revela-recuerdos`. Por cada usuario
+suscrito:
+1. Busca fotos de ese mismo día y mes en años anteriores.
+2. Arma el álbum «Recuerdos del 5 de diciembre». Si ya existe uno con esas fotos, no lo repite.
+3. Manda un correo con **SES** que dice «Hace 1 año…», con hasta 6 miniaturas firmadas por CloudFront durante 7 días y
+   un enlace a Revela.
+
+**SES está en sandbox:** solo entrega a correos verificados, hasta 200 al día. El `apply` crea la identidad de
+`correo_alertas`, y AWS manda un correo de verificación que hay que confirmar. Ese correo funciona como remitente y
+como destinatario. A los demás usuarios se les arma el álbum igual, y el rechazo de SES queda en el log.
+
+Para probar con otra fecha (por ejemplo, el día de la exposición):
+```
+aws lambda invoke --function-name jyj-revela-recuerdos --cli-binary-format raw-in-base64-out \
+  --payload '{"fecha":"2026-12-05"}' /dev/stdout
+```
+
 ## Operación (módulo `operacion` y ajustes en los demás)
 
 - **Tablero de CloudWatch** `jyj-revela` (`terraform output tablero`): fotos analizadas y fallidas, segundos por foto
-  (p50/p90), invocaciones/errores/throttles de las 4 Lambdas, peticiones y errores de la API, cola y DLQ, y llamadas a
+  (p50/p90), invocaciones/errores/throttles de las 5 Lambdas, peticiones y errores de la API, cola y DLQ, y llamadas a
   Rekognition y Bedrock. Estas dos últimas son de toda la cuenta, porque esos servicios no tienen recursos propios.
 - **Alarmas por correo (SNS):** análisis fallido en Step Functions, mensajes en la DLQ y 5xx en la API. Sin tráfico no
   se disparan (`notBreaching`).
-- **X-Ray:** Step Functions y las 4 Lambdas en modo `Active`. La traza sigue cada foto por el flujo. API Gateway HTTP
+- **X-Ray:** Step Functions y las 5 Lambdas en modo `Active`. La traza sigue cada foto por el flujo. API Gateway HTTP
   no aparece porque X-Ray solo existe en las APIs REST.
 - **Presupuesto (AWS Budgets):** USD 10 al mes, filtrado por la etiqueta `Proyecto=revela`, que Terraform activa en Billing
   y que tarda hasta 24 h en contar. Avisa al 50 % real y al 100 % proyectado. Rekognition, Bedrock y Location cobran por

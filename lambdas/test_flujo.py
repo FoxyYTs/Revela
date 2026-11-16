@@ -772,3 +772,52 @@ def test_asistente_handler(aws, monkeypatch):
     for _ in range(asistente.PREGUNTAS_DIA - 3):
         preguntar({"pregunta": "hola"})
     assert preguntar({"pregunta": "hola"})[0] == 429
+
+
+def test_recuerdos(aws, llave_cdn, monkeypatch):
+    import recuerdos
+    monkeypatch.setattr(recuerdos, "REMITENTE", "revela@correo.test")
+    monkeypatch.setattr(recuerdos, "POOL", "us-east-1_test")
+    assert llamar("GET /recuerdos")[1] == {"activo": False}
+    assert llamar("PUT /recuerdos")[1] == {"activo": True}
+    api.tabla.put_item(Item={"PK": "RECUERDOS", "SK": "otro-usuario"})  # suscrito sin fotos: no recibe nada
+
+    hace_un_anio, hace_tres, otro_dia, este_anio = "1" * 32, "2" * 32, "3" * 32, "4" * 32
+    foto_lista(hace_un_anio, "2025-12-05")
+    foto_lista(hace_tres, "2023-12-05")
+    foto_lista(otro_dia, "2025-12-06")
+    foto_lista(este_anio, "2026-12-05")
+
+    def correo(usuario):
+        assert usuario == USUARIO  # a "otro-usuario" no se le busca el correo porque no tiene recuerdos
+        return "persona@correo.test"
+    monkeypatch.setattr(recuerdos, "correo_de", correo)
+    enviados = []
+    monkeypatch.setattr(recuerdos.ses, "send_email", lambda **k: enviados.append(k))
+
+    r = recuerdos.lambda_handler({"fecha": "2026-12-05"}, None)
+    assert r == {"fecha": "2026-12-05", "usuarios": 2, "albumes": 1, "correos": 1}
+    album = llamar("GET /albumes")[1]["albumes"][0]
+    assert album["nombre"] == "Recuerdos del 5 de diciembre" and album["fotos"] == 2
+    asunto = enviados[0]["Message"]["Subject"]["Data"]
+    assert asunto == "Hace 1 año y 3 años: 2 fotos del 5 de diciembre" and enviados[0]["Destination"]["ToAddresses"] == ["persona@correo.test"]
+    assert enviados[0]["Message"]["Body"]["Html"]["Data"].count("https://cdn.test/miniaturas/") == 2  # firmadas por CloudFront
+
+    # Si vuelve a correr el mismo día no repite el álbum (el correo sí sale)
+    assert recuerdos.lambda_handler({"fecha": "2026-12-05"}, None)["albumes"] == 0
+    assert len(llamar("GET /albumes")[1]["albumes"]) == 1
+    assert recuerdos.lambda_handler({"fecha": "2026-03-01"}, None)["correos"] == 0  # día sin recuerdos
+
+    assert llamar("DELETE /recuerdos")[1] == {"activo": False}
+    assert recuerdos.lambda_handler({"fecha": "2026-12-05"}, None)["usuarios"] == 1
+
+
+def test_recuerdos_correo_de_cognito(monkeypatch):
+    import recuerdos
+    monkeypatch.setattr(recuerdos, "POOL", "us-east-1_test")
+    with Stubber(recuerdos.cognito) as c:
+        pedido = {"UserPoolId": "us-east-1_test", "Filter": 'sub = "abc"', "Limit": 1}
+        c.add_response("list_users", {"Users": [{"Attributes": [{"Name": "email", "Value": "a@b.co"}, {"Name": "email_verified", "Value": "true"}]}]}, pedido)
+        c.add_response("list_users", {"Users": [{"Attributes": [{"Name": "email", "Value": "a@b.co"}, {"Name": "email_verified", "Value": "false"}]}]}, pedido)
+        assert recuerdos.correo_de("abc") == "a@b.co"
+        assert recuerdos.correo_de("abc") is None  # sin verificar no se le escribe

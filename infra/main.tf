@@ -58,6 +58,8 @@ module "api" {
   llave        = module.web.llave
   llave_arn    = module.web.llave_arn
   script_capa  = "${path.module}/../scripts/capa.sh"
+  correo       = var.correo_alertas
+  pool_id      = module.auth.user_pool_id
 }
 
 variable "correo_alertas" {

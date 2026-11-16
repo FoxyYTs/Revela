@@ -149,10 +149,9 @@ def herramientas(usuario, estado):
         if not estado.get("ultimas"):
             raise ValueError("Primero busca fotos: el álbum se arma con la última búsqueda")
         # Nova a veces lo vuelve a crear al contestarle "sí" en el turno siguiente: con las mismas fotos, no se repite
-        for i in api.consultar(pk, "ALBUM#"):
-            if set(i.get("fotos", [])) == set(estado["ultimas"]):
-                estado["album"] = {"id": i["SK"][6:], "nombre": i["nombre"]}
-                return f"Ya existe el álbum «{i['nombre']}» con estas mismas fotos; no se creó otro."
+        if igual := api.album_igual(usuario, estado["ultimas"]):
+            estado["album"] = {"id": igual["SK"][6:], "nombre": igual["nombre"]}
+            return f"Ya existe el álbum «{igual['nombre']}» con estas mismas fotos; no se creó otro."
         _, album = api.crear_album(usuario, {"nombre": nombre})
         api.editar_album(usuario, album["id"], {"agregar": estado["ultimas"]})
         estado["album"] = {"id": album["id"], "nombre": album["nombre"]}
