@@ -19,14 +19,15 @@ Navegador ──Cognito (login)──► API Gateway HTTP (JWT) ──► Lambda
                                                                              Rekognition IndexFaces + Users (si activó personas)
 Web: S3 privado ◄── CloudFront + OAC          Mapa: MapLibre + mosaicos de Amazon Location (API key solo para la web)
      album.html ──► GET /compartidos/{token} (sin cuenta) ──► URLs de CloudFront firmadas (key group) ──► publicas/ y miniaturas/
+     ✦ Preguntar ──► POST /asistente ──► Lambda asistente (Strands + Nova 2 Lite) ──► herramientas sobre api.py
 ```
 
 | Carpeta | Contenido |
 |---|---|
-| `lambdas/` | `api.py`, `procesar.py`, `guardar.py`, `caras.py` y `test_flujo.py` (moto) |
+| `lambdas/` | `api.py`, `asistente.py`, `procesar.py`, `guardar.py`, `caras.py` y `test_flujo.py` (moto) |
 | `web/` | `index.html` + `app.js`, sin build; la configuración llega en `config.js` (la escribe Terraform) |
-| `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web`, `operacion` (86 recursos) |
-| `scripts/capa_pillow.sh` | Construye la capa de Pillow; Terraform la llama solo |
+| `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web`, `operacion` (96 recursos) |
+| `scripts/capa.sh` | Construye las capas (Pillow, rsa, Strands); Terraform la llama sola |
 
 ## Pruebas
 
@@ -54,14 +55,33 @@ y `cd ../web && python -m http.server 8000` (localhost:8000 está permitido en C
 Destruir: `terraform destroy` (los buckets tienen `force_destroy`) y `scripts/borrar_caras.sh` (las colecciones de
 caras las crea la API, no Terraform). El destroy también desactiva la etiqueta de costos `Proyecto` en Billing.
 
+## Asistente (`lambdas/asistente.py`)
+
+El botón **✦ Preguntar** del buscador manda la frase a un agente de **Strands Agents** con **Amazon Nova 2 Lite**
+(`us.amazon.nova-2-lite-v1:0`). El agente decide qué herramientas usar y responde en una a tres frases. Las fotos que
+encontró aparecen debajo, como en cualquier búsqueda, y se pueden pasar a un álbum.
+
+| Herramienta | Qué hace |
+|---|---|
+| `buscar_fotos(texto, personas, lugar, desde, hasta)` | Cruza los filtros que reciba: lo que se ve (búsqueda exacta + por significado), nombres de personas, ciudad y rango de fechas |
+| `personas()` / `lugares()` | Nombres y ciudades que existen, para corregir lo que pidió el usuario |
+| `crear_album(nombre)` | Guarda en un álbum la última búsqueda ("arma un álbum con…") |
+
+- Corre en su propia Lambda con la capa `strands` (~72 MB), para que su arranque en frío no frene la API. Reutiliza
+  las funciones de `api.py`.
+- Las herramientas se crean en cada petición con el usuario del JWT ya puesto. El modelo no puede pedir fotos de otra
+  persona y nunca maneja ids.
+- Tope: 30 preguntas por usuario al día. En local responde en 2-3 s.
+- Cada pregunta es independiente: el asistente no recuerda las anteriores.
+
 ## Operación (módulo `operacion` y ajustes en los demás)
 
 - **Tablero de CloudWatch** `jyj-revela` (`terraform output tablero`): fotos analizadas y fallidas, segundos por foto
-  (p50/p90), invocaciones/errores/throttles de las 3 Lambdas, peticiones y errores de la API, cola y DLQ, y llamadas a
+  (p50/p90), invocaciones/errores/throttles de las 4 Lambdas, peticiones y errores de la API, cola y DLQ, y llamadas a
   Rekognition y Bedrock. Estas dos últimas son de toda la cuenta, porque esos servicios no tienen recursos propios.
 - **Alarmas por correo (SNS):** análisis fallido en Step Functions, mensajes en la DLQ y 5xx en la API. Sin tráfico no
   se disparan (`notBreaching`).
-- **X-Ray:** Step Functions y las 3 Lambdas en modo `Active`. La traza sigue cada foto por el flujo. API Gateway HTTP
+- **X-Ray:** Step Functions y las 4 Lambdas en modo `Active`. La traza sigue cada foto por el flujo. API Gateway HTTP
   no aparece porque X-Ray solo existe en las APIs REST.
 - **Presupuesto (AWS Budgets):** USD 10 al mes, filtrado por la etiqueta `Proyecto=revela`, que Terraform activa en Billing
   y que tarda hasta 24 h en contar. Avisa al 50 % real y al 100 % proyectado. Rekognition, Bedrock y Location cobran por

@@ -673,3 +673,80 @@ def test_albumes_y_enlace_compartido(aws, traductor, llave_cdn, monkeypatch):
     vivo = llamar("POST /albumes/{id}/enlace", {"dias": 30}, foto=aid)[1]["url"].split("#")[1]
     assert llamar("DELETE /albumes/{id}", foto=aid)[0] == 204
     assert publico(vivo)[0] == 404 and llamar("GET /fotos/{id}", foto=playa)[0] == 200
+
+
+def foto_lista(foto, fecha, ciudad=None, persona=None):
+    """Una foto ya analizada con sus índices, escrita directo en la tabla (sin pasar por el flujo)."""
+    pk, orden = f"U#{USUARIO}", f"{fecha}T10:00:00#{foto}"
+    tabla = api.tabla
+    tabla.put_item(Item={"PK": pk, "SK": f"F#{foto}", "estado": "LISTA", "fecha_orden": orden, "miniatura": f"miniaturas/{USUARIO}/{foto}.jpg",
+                         "original": "x", "descripcion": "Una foto.", **({"lugar": {"nombre": f"{ciudad}, Colombia"}} if ciudad else {})})
+    if ciudad:
+        tabla.put_item(Item={"PK": pk, "SK": f"L#{api.normalizar(ciudad)}#{orden}", "foto": foto})
+    if persona:
+        tabla.put_item(Item={"PK": pk, "SK": f"P#{persona}#{orden}", "foto": foto, "persona": persona})
+
+
+def test_asistente_combina_filtros(aws):
+    import asistente
+    juliana, otra = "a" * 32, "b" * 32
+    api.tabla.put_item(Item={"PK": f"U#{USUARIO}", "SK": f"PERSONA#{juliana}", "nombre": "Juliana"})
+    api.tabla.put_item(Item={"PK": f"U#{USUARIO}", "SK": f"PERSONA#{otra}"})  # sin nombre: no sale
+    vieja, buena, otra_ciudad, sin_ella = "1" * 32, "2" * 32, "3" * 32, "4" * 32
+    foto_lista(vieja, "2024-05-01", "Cartagena", juliana)
+    foto_lista(buena, "2025-12-24", "Cartagena", juliana)
+    foto_lista(otra_ciudad, "2025-06-01", "Medellín", juliana)
+    foto_lista(sin_ella, "2025-03-01", "Cartagena")
+
+    estado = {}
+    personas, lugares, buscar_fotos, crear_album = asistente.herramientas(USUARIO, estado)
+    assert json.loads(personas()) == ["Juliana"]
+    assert lugares() == "Ninguna foto tiene ubicación."  # lee el gps, que estas fotos no tienen
+
+    r = json.loads(buscar_fotos(personas=["juliana"], lugar="cartagena", desde="2025-01-01", hasta="2025-12-31"))
+    assert r["encontradas"] == 1 and r["fotos"][0]["fecha"] == "2025-12-24" and estado["ultimas"] == [buena]
+    assert json.loads(buscar_fotos(lugar="Cartagena"))["encontradas"] == 3
+    assert estado["ultimas"] == [buena, sin_ella, vieja]  # de la más nueva a la más vieja
+    assert json.loads(buscar_fotos(desde="2025-01-01"))["encontradas"] == 3  # solo fechas: por el índice
+    assert "Pedro" in buscar_fotos(personas=["Pedro"]) and estado["ultimas"] == []
+    with pytest.raises(ValueError):
+        buscar_fotos(desde="24/12/2025")
+    with pytest.raises(ValueError):
+        crear_album(nombre="Nada")  # sin búsqueda previa no hay fotos
+
+    buscar_fotos(personas=["Juliana"], lugar="Cartagena")
+    assert "2 fotos" in crear_album(nombre="Cartagena con Juli")
+    album = llamar("GET /albumes/{id}", foto=estado["album"]["id"])[1]
+    assert album["nombre"] == "Cartagena con Juli" and {f["id"] for f in album["fotos"]} == {vieja, buena}
+
+
+def test_asistente_handler(aws, monkeypatch):
+    import asistente
+
+    class AgenteFalso:
+        def __init__(self, tools, **_):
+            self.buscar = tools[2]
+
+        def __call__(self, pregunta):
+            self.buscar(lugar="Cartagena")
+            return "Encontré una foto en Cartagena."
+
+    monkeypatch.setattr(asistente, "Agent", AgenteFalso)
+    monkeypatch.setattr(asistente, "BedrockModel", lambda **_: None)
+    foto_lista("1" * 32, "2025-12-24", "Cartagena")
+
+    def preguntar(cuerpo):
+        r = asistente.lambda_handler({"body": json.dumps(cuerpo), "requestContext": {"authorizer": {"jwt": {"claims": {"sub": USUARIO}}}}}, None)
+        return r["statusCode"], json.loads(r["body"])
+
+    assert preguntar({"pregunta": "   "})[0] == 400
+    assert preguntar({"pregunta": "x" * 301})[0] == 400
+    status, r = preguntar({"pregunta": "¿fotos en Cartagena?"})
+    assert status == 200 and r["respuesta"] == "Encontré una foto en Cartagena."
+    assert [f["id"] for f in r["fotos"]] == ["1" * 32] and r["fotos"][0]["miniatura"].startswith("https://") and "album" not in r
+
+    monkeypatch.setattr(AgenteFalso, "__call__", lambda self, p: 1 / 0)
+    assert preguntar({"pregunta": "hola"})[0] == 502  # Bedrock caído: error claro, sin traza al usuario
+    for _ in range(asistente.PREGUNTAS_DIA - 2):
+        preguntar({"pregunta": "hola"})
+    assert preguntar({"pregunta": "hola"})[0] == 429

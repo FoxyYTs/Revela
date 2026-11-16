@@ -58,7 +58,7 @@ resource "aws_cloudwatch_dashboard" "revela" {
       merge(local.grafica, { x = 0, y = 6, properties = {
         title = "Lambdas: invocaciones, errores y throttles (concurrencia de la cuenta = 10)", region = local.region, stat = "Sum", period = 300,
         # setproduct y no flatten: flatten también aplanaría cada métrica, y CloudWatch exige una lista por métrica
-        metrics = [for par in setproduct(concat(var.funciones, ["${var.prefijo}-api"]), ["Invocations", "Errors", "Throttles"]) :
+        metrics = [for par in setproduct(concat(var.funciones, ["${var.prefijo}-api", "${var.prefijo}-asistente"]), ["Invocations", "Errors", "Throttles"]) :
         ["AWS/Lambda", par[1], "FunctionName", par[0]]]
       } }),
       merge(local.grafica, { x = 12, y = 6, properties = {

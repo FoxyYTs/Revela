@@ -200,11 +200,32 @@ function buscar(q, persona = null, album = null) {
   estado.persona = persona;
   estado.album = album;
   estado.eligiendo = estado.uniendo = false;
+  estado.respuesta = null;
   vista("fotos");
   cargar();
 }
 
+// El asistente (agente de Strands) entiende pedidos completos y devuelve una respuesta corta con las fotos
+async function preguntar(texto) {
+  texto = texto.trim();
+  if (!texto) return $("#q").focus();
+  Object.assign(estado, { q: texto, persona: null, album: null, eligiendo: false, uniendo: false, siguiente: null, fotos: [],
+                          respuesta: "Pensando…" });
+  vista("fotos");
+  pintar();
+  try {
+    const r = await api("POST", "/asistente", { pregunta: texto });
+    if (estado.respuesta !== "Pensando…" || estado.q !== texto) return;  // mientras tanto buscó otra cosa
+    Object.assign(estado, { fotos: r.fotos, respuesta: r.respuesta });
+    pintar();
+    if (r.album) cargarAlbumes().catch(() => {});
+  } catch (e) {
+    if (e.message !== "sesión cerrada" && estado.q === texto) { estado.respuesta = e.message; pintar(); }
+  }
+}
+
 $("#form-buscar").onsubmit = (e) => { e.preventDefault(); $("#q").blur(); buscar($("#q").value); };
+$("#btn-preguntar").onclick = () => preguntar($("#q").value);
 $("#q").oninput = () => { if (!$("#q").value && estado.q) buscar(""); };
 
 // ---------- Explorar: personas, lugares y cosas ----------
@@ -461,13 +482,13 @@ function contexto() {
     }
   } else {
     titulo = [estado.q];
-    sub = `${n} foto(s)` + (parecidas ? `, ${parecidas} por parecido` : "");
+    sub = estado.respuesta || `${n} foto(s)` + (parecidas ? `, ${parecidas} por parecido` : "");
   }
   // Lo que se buscó (o la persona) se puede meter entero a un álbum: así se arman álbumes "por lo que se ve"
   const listas = estado.fotos.filter((f) => f.estado === "LISTA").map((f) => f.id);
   if ((estado.q || estado.persona) && !estado.eligiendo && !estado.uniendo && listas.length) {
     acciones.unshift(selectorAlbum(h("select", { className: "chip selector" }), listas, `Agregar estas ${listas.length} a un álbum…`,
-                                   estado.q || nombrePersona(estado.persona)));
+                                   estado.q.slice(0, 60) || nombrePersona(estado.persona)));
   }
   ctx.replaceChildren(volver, h("h1", {}, ...titulo), h("p", { className: "sub", textContent: sub }),
                       h("div", { className: "acciones-ctx" }, ...acciones));
@@ -482,7 +503,7 @@ function pintar() {
   contexto();
 
   const vacio = $("#vacio");
-  vacio.classList.toggle("oculto", estado.fotos.length > 0);
+  vacio.classList.toggle("oculto", estado.fotos.length > 0 || !!estado.respuesta);  // la respuesta ya explica qué pasó
   vacio.replaceChildren(...(estado.album
     ? [h("h2", { textContent: "Álbum vacío" }), h("p", { textContent: "Selecciona fotos en Fotos o busca algo, y agrégalas a este álbum." })]
     : estado.q || estado.persona

@@ -71,6 +71,9 @@
             border: 1px solid transparent; border-radius: 12px; padding: 0 14px; color: var(--suave); }
   .buscar:focus-within { border-color: var(--acento-2); background: var(--panel-2); }
   .buscar input { flex: 1; background: none; border: 0; padding: 11px 0; outline: none; min-width: 0; color: var(--texto); }
+  .buscar .preguntar { flex: none; background: none; border: 0; border-radius: 8px; padding: 6px 8px; color: var(--acento-2);
+                      font: 600 13px Inter, sans-serif; cursor: pointer; }
+  .buscar .preguntar:hover, .buscar .preguntar:focus-visible { background: var(--panel); color: var(--texto); }
   .superior .btn.primario { margin-left: auto; }
   .solo-movil { display: none !important; }
 
@@ -212,6 +215,7 @@
     .superior .btn.primario span { display: none; }
     .solo-movil { display: inline-flex !important; }
     .buscar { padding: 0 10px; }
+    .buscar .preguntar span { display: none; }
     main { padding: 0 3px 90px; }
     main :is(.contexto, .dia h2, .vista > h2, .titulo-vista, .mosaico, .personas, .chips, .invitacion) { margin-left: 10px; margin-right: 10px; }
     .fila { gap: 3px; }
@@ -291,7 +295,8 @@
     <div class="logo solo-movil">Revel<span>a</span></div>
     <form class="buscar" id="form-buscar" role="search">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
-      <input id="q" type="search" placeholder="Busca «perro», un letrero o «gente comiendo en la playa»" aria-label="Buscar fotos">
+      <input id="q" type="search" placeholder="Busca «perro» o pregunta: «fotos con Ana en la playa el año pasado»" aria-label="Buscar fotos">
+      <button type="button" class="preguntar" id="btn-preguntar" title="Preguntar al asistente" aria-label="Preguntar al asistente">✦ <span>Preguntar</span></button>
     </form>
     <button class="btn primario" id="btn-subir" aria-label="Subir fotos">
       <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 16V4m0 0-5 5m5-5 5 5M4 20h16"/></svg><span>Subir</span>

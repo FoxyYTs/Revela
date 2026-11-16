@@ -75,6 +75,22 @@ variable "origenes" {
   type = list(string)
 }
 
+locals {
+  modelo = "us.amazon.nova-2-lite-v1:0"
+  # El asistente importa api.py, así que necesita el mismo entorno
+  entorno = {
+    TABLA       = var.tabla
+    BUCKET      = var.bucket
+    SUBIDAS_DIA = "50"
+    MAPA_KEY    = var.mapa_key
+    VECTORES    = var.vectores
+    CARAS       = "${var.prefijo}-caras-"
+    CDN         = var.cdn
+    FIRMA_ID    = var.firma_id
+    LLAVE       = var.llave
+  }
+}
+
 data "aws_iam_policy_document" "assume_lambda" {
   statement {
     actions = ["sts:AssumeRole"]
@@ -122,6 +138,12 @@ resource "aws_iam_role_policy" "api" {
       { Effect = "Allow", Action = "ssm:GetParameter", Resource = var.llave_arn },
       # Buscar por significado: vector del texto con Nova y consulta filtrada por usuario (el filtro exige GetVectors)
       { Effect = "Allow", Action = "bedrock:InvokeModel", Resource = "arn:aws:bedrock:us-east-1::foundation-model/amazon.nova-2-multimodal-embeddings-v1:0" },
+      # Asistente: Nova 2 Lite por el perfil us., que reparte las llamadas entre tres regiones
+      {
+        Effect = "Allow", Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"] # Strands usa ConverseStream
+        Resource = concat(["arn:aws:bedrock:us-east-1:${data.aws_caller_identity.actual.account_id}:inference-profile/${local.modelo}"],
+        [for r in ["us-east-1", "us-east-2", "us-west-2"] : "arn:aws:bedrock:${r}::foundation-model/amazon.nova-2-lite-v1:0"])
+      },
       { Effect = "Allow", Action = ["s3vectors:QueryVectors", "s3vectors:GetVectors", "s3vectors:DeleteVectors"], Resource = var.indice_arn },
       # Personas: una colección por usuario que se crea al dar el consentimiento y se borra al retirarlo
       { Effect = "Allow", Action = ["rekognition:CreateCollection", "rekognition:DeleteCollection", "rekognition:DeleteFaces", "rekognition:IndexFaces", "rekognition:SearchUsers", "rekognition:CreateUser", "rekognition:AssociateFaces", "rekognition:ListFaces", "rekognition:DisassociateFaces", "rekognition:DeleteUser"], Resource = "arn:aws:rekognition:us-east-1:${data.aws_caller_identity.actual.account_id}:collection/${var.prefijo}-caras-*" },
@@ -161,20 +183,49 @@ resource "aws_lambda_function" "api" {
   memory_size      = 256
 
   environment {
-    variables = {
-      TABLA       = var.tabla
-      BUCKET      = var.bucket
-      SUBIDAS_DIA = "50"
-      MAPA_KEY    = var.mapa_key
-      VECTORES    = var.vectores
-      CARAS       = "${var.prefijo}-caras-"
-      CDN         = var.cdn
-      FIRMA_ID    = var.firma_id
-      LLAVE       = var.llave
-    }
+    variables = local.entorno
   }
 
   depends_on = [aws_cloudwatch_log_group.api, aws_iam_role_policy_attachment.api_logs]
+}
+
+# Strands Agents (con sus dependencias: pydantic, opentelemetry, mcp…) ~72 MB; solo la usa el asistente
+data "external" "capa_strands" {
+  program = ["bash", var.script_capa, "strands", "strands-agents==1.65.0"]
+}
+
+resource "aws_lambda_layer_version" "strands" {
+  layer_name          = "${var.prefijo}-strands"
+  filename            = data.external.capa_strands.result.path
+  source_code_hash    = filebase64sha256(data.external.capa_strands.result.path)
+  compatible_runtimes = ["python3.12"]
+}
+
+resource "aws_cloudwatch_log_group" "asistente" {
+  name              = "/aws/lambda/${var.prefijo}-asistente"
+  retention_in_days = 7
+}
+
+# Agente aparte de la API: su capa pesada y su arranque en frío no frenan las demás rutas
+resource "aws_lambda_function" "asistente" {
+  function_name = "${var.prefijo}-asistente"
+  role          = aws_iam_role.api.arn
+  runtime       = "python3.12"
+  handler       = "asistente.lambda_handler"
+  tracing_config {
+    mode = "Active"
+  }
+  layers           = [aws_lambda_layer_version.firmas.arn, aws_lambda_layer_version.strands.arn]
+  filename         = var.zip
+  source_code_hash = var.zip_hash
+  timeout          = 29 # API Gateway corta a los 30 s
+  memory_size      = 512
+
+  environment {
+    variables = merge(local.entorno, { MODELO = local.modelo })
+  }
+
+  depends_on = [aws_cloudwatch_log_group.asistente, aws_iam_role_policy_attachment.api_logs]
 }
 
 resource "aws_apigatewayv2_api" "this" {
@@ -219,6 +270,29 @@ resource "aws_apigatewayv2_route" "rutas" {
   target             = "integrations/${aws_apigatewayv2_integration.api.id}"
   authorization_type = "JWT"
   authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+}
+
+resource "aws_apigatewayv2_integration" "asistente" {
+  api_id                 = aws_apigatewayv2_api.this.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.asistente.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "asistente" {
+  api_id             = aws_apigatewayv2_api.this.id
+  route_key          = "POST /asistente"
+  target             = "integrations/${aws_apigatewayv2_integration.asistente.id}"
+  authorization_type = "JWT"
+  authorizer_id      = aws_apigatewayv2_authorizer.cognito.id
+}
+
+resource "aws_lambda_permission" "asistente" {
+  statement_id  = "AllowAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.asistente.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.this.execution_arn}/*/*"
 }
 
 # Única ruta sin autorizador: el álbum compartido se abre sin cuenta (el token de 32 caracteres es la credencial)

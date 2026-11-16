@@ -18,6 +18,7 @@ GET    /albumes       → álbumes del usuario;  POST /albumes {nombre} → crea
 GET    /albumes/{id}  → el álbum con sus fotos;  PUT {nombre?, agregar?, quitar?};  DELETE lo borra (y su enlace)
 POST   /albumes/{id}/enlace {dias} → enlace para verlo sin cuenta;  DELETE lo revoca
 GET    /compartidos/{token} (pública) → el álbum compartido con URLs de CloudFront firmadas por una hora
+POST   /asistente     → lo atiende otra Lambda (asistente.py): agente de Strands que combina estas búsquedas
 """
 import base64
 import json
