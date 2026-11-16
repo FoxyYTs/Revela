@@ -119,6 +119,7 @@ def herramientas(usuario, estado):
                                 KeyConditionExpression=Key("PK").eq(pk) & Key("fecha_orden").between(desde or "0", (hasta or "9") + "~"))
             listas.append([i["SK"][2:] for i in r["Items"]])
             filtros.append("fechas")
+        log.info("buscar_fotos: filtros=%s alguna=%s", [f.split()[0] for f in filtros], alguna)  # sin nombres en los logs
         comunes = set.intersection(*map(set, listas))
         ids = [i for i in dict.fromkeys(listas[0]) if i in comunes][:MAX_FOTOS]
         items = [i for i in api.leer_fotos(pk, ids).values() if i["estado"] == "LISTA"
@@ -127,6 +128,12 @@ def herramientas(usuario, estado):
         vistas = [{"fecha": i["fecha_orden"][:10], "lugar": (i.get("lugar") or {}).get("nombre"), "descripcion": i.get("descripcion")}
                   for i in items[:AL_MODELO]]
         resultado = {"encontradas": len(items), "fotos": vistas}
+        if not items and len(personas or []) > 1 and not alguna:
+            # Nunca salen juntas: se muestran las de cualquiera, para que lo que cuenta el modelo, las fotos en pantalla
+            # y el álbum que arme sean lo mismo (si no, Nova narra los conteos y la pantalla queda vacía)
+            resultado = json.loads(buscar_fotos(texto, personas, lugar, desde, hasta, alguna=True))
+            return json.dumps({"juntas": 0, "nota": "Ninguna foto las tiene juntas; estas son las fotos donde sale alguna "
+                                                     "y son las que ve el usuario", **resultado}, ensure_ascii=False)
         if not items and (len(listas) > 1 or (desde or hasta) and filtros[-1:] != ["fechas"]):
             # Nova Lite casi no reintenta solo: decirle qué filtro sobra le permite proponer algo concreto
             resultado["cada_filtro_por_separado"] = {f: len(set(l)) for f, l in zip(filtros, listas)}

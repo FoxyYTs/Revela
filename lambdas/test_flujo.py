@@ -709,7 +709,8 @@ def test_asistente_combina_filtros(aws):
     assert vacia["encontradas"] == 0 and vacia["cada_filtro_por_separado"] == {"persona Juliana": 3, "lugar Medellín": 1}
     api.tabla.put_item(Item={"PK": f"U#{USUARIO}", "SK": f"PERSONA#{otra}", "nombre": "Sara"})
     foto_lista("5" * 32, "2025-07-01", "Cali", otra)
-    assert json.loads(buscar_fotos(personas=["Juliana", "Sara"]))["encontradas"] == 0  # nunca juntas
+    juntas = json.loads(buscar_fotos(personas=["Juliana", "Sara"]))  # nunca salen juntas: muestra las de cualquiera
+    assert juntas["juntas"] == 0 and juntas["encontradas"] == 4 and len(estado["ultimas"]) == 4
     assert json.loads(buscar_fotos(personas=["Juliana", "Sara"], alguna=True))["encontradas"] == 4
     assert estado["ultimas"] == [buena, "5" * 32, otra_ciudad, vieja]  # cualquiera de las dos, por fecha
     assert json.loads(buscar_fotos(lugar="Cartagena"))["encontradas"] == 3
