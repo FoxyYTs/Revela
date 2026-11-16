@@ -451,7 +451,9 @@ def buscar_caras(usuario, foto):
         raise ErrorCliente(409, "Primero activa Personas")
     descontar_cupo(usuario, "busquedas_caras", BUSQUEDAS_CARAS_DIA,
                    f"Llegaste al límite de {BUSQUEDAS_CARAS_DIA} búsquedas de caras por día; mañana puedes buscar más")
-    personas, caras = rostros.reconocer(usuario, foto, BUCKET, item.get("revisada", item["original"]), calidad="LOW")
+    # publicas/ sigue en Standard; fotos/ pasa a Glacier IR al mes (cobra por leerlo). Las fotos viejas no tienen publicas/
+    imagen = item.get("publica") or item.get("revisada", item["original"])
+    personas, caras = rostros.reconocer(usuario, foto, BUCKET, imagen, calidad="LOW")
     if item.get("caras"):
         rostros.borrar(usuario, item["caras"])
     claves = {f"P#{p}#{item['fecha_orden']}": {"persona": p, "caja": caja} for p, caja in personas}

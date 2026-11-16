@@ -18,6 +18,10 @@ output "bucket_fotos" {
   value = module.datos.bucket
 }
 
+output "tablero" {
+  value = module.operacion.tablero
+}
+
 output "maquina_estados" {
   value = module.pipeline.maquina_estados
 }

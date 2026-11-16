@@ -113,6 +113,12 @@ resource "aws_iam_role" "procesar" {
   assume_role_policy = data.aws_iam_policy_document.assume_lambda.json
 }
 
+# X-Ray: cada Lambda manda su segmento; Step Functions une la traza de la foto de punta a punta
+resource "aws_iam_role_policy_attachment" "procesar_xray" {
+  role       = aws_iam_role.procesar.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
 resource "aws_iam_role_policy_attachment" "procesar_logs" {
   role       = aws_iam_role.procesar.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
@@ -136,10 +142,13 @@ resource "aws_cloudwatch_log_group" "procesar" {
 }
 
 resource "aws_lambda_function" "procesar" {
-  function_name    = "${var.prefijo}-procesar"
-  role             = aws_iam_role.procesar.arn
-  runtime          = "python3.12"
-  handler          = "procesar.lambda_handler"
+  function_name = "${var.prefijo}-procesar"
+  role          = aws_iam_role.procesar.arn
+  runtime       = "python3.12"
+  handler       = "procesar.lambda_handler"
+  tracing_config {
+    mode = "Active"
+  }
   filename         = var.zip
   source_code_hash = var.zip_hash
   layers           = [aws_lambda_layer_version.pillow.arn]
@@ -159,6 +168,12 @@ locals {
 resource "aws_iam_role" "guardar" {
   name               = "${var.prefijo}-guardar-role"
   assume_role_policy = data.aws_iam_policy_document.assume_lambda.json
+}
+
+# X-Ray: cada Lambda manda su segmento; Step Functions une la traza de la foto de punta a punta
+resource "aws_iam_role_policy_attachment" "guardar_xray" {
+  role       = aws_iam_role.guardar.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
 }
 
 resource "aws_iam_role_policy_attachment" "guardar_logs" {
@@ -203,10 +218,13 @@ resource "aws_cloudwatch_log_group" "guardar" {
 }
 
 resource "aws_lambda_function" "guardar" {
-  function_name    = "${var.prefijo}-guardar"
-  role             = aws_iam_role.guardar.arn
-  runtime          = "python3.12"
-  handler          = "guardar.lambda_handler"
+  function_name = "${var.prefijo}-guardar"
+  role          = aws_iam_role.guardar.arn
+  runtime       = "python3.12"
+  handler       = "guardar.lambda_handler"
+  tracing_config {
+    mode = "Active"
+  }
   filename         = var.zip
   source_code_hash = var.zip_hash
   timeout          = 60 # Nova + hasta 10 caras con 3 llamadas a Rekognition cada una
@@ -271,6 +289,7 @@ resource "aws_iam_role_policy" "flujo" {
       { Effect = "Allow", Action = ["rekognition:DetectLabels", "rekognition:DetectText", "rekognition:DetectModerationLabels"], Resource = "*" },
       { Effect = "Allow", Action = "s3:GetObject", Resource = "${var.bucket_arn}/fotos/*" },
       { Effect = "Allow", Action = "dynamodb:UpdateItem", Resource = var.tabla_arn },
+      { Effect = "Allow", Action = ["xray:PutTraceSegments", "xray:PutTelemetryRecords", "xray:GetSamplingRules", "xray:GetSamplingTargets"], Resource = "*" },
     ]
   })
 }
@@ -285,6 +304,10 @@ resource "aws_sfn_state_machine" "flujo" {
     reintento_lambda      = local.reintento_lambda
     reintento_rekognition = local.reintento_rekognition
   })
+
+  tracing_configuration {
+    enabled = true
+  }
 }
 
 # ---------- EventBridge Pipes: SQS → Step Functions sin Lambda intermedia ----------
@@ -342,6 +365,14 @@ resource "aws_pipes_pipe" "fotos" {
   }
 
   depends_on = [aws_iam_role_policy.pipe]
+}
+
+output "cola_errores" {
+  value = aws_sqs_queue.dlq.name
+}
+
+output "funciones" {
+  value = [aws_lambda_function.procesar.function_name, aws_lambda_function.guardar.function_name]
 }
 
 output "maquina_estados" {

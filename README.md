@@ -25,7 +25,7 @@ Web: S3 privado ◄── CloudFront + OAC          Mapa: MapLibre + mosaicos de
 |---|---|
 | `lambdas/` | `api.py`, `procesar.py`, `guardar.py`, `caras.py` y `test_flujo.py` (moto) |
 | `web/` | `index.html` + `app.js`, sin build; la configuración llega en `config.js` (la escribe Terraform) |
-| `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web` (74 recursos) |
+| `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web`, `operacion` (86 recursos) |
 | `scripts/capa_pillow.sh` | Construye la capa de Pillow; Terraform la llama solo |
 
 ## Pruebas
@@ -37,7 +37,9 @@ cd lambdas && ../.venv/bin/pytest -q
 
 ## Despliegue
 
-Necesita `uv` y `zip` (para la capa de Pillow). Estado en `jyj-reto-tfstate-497502378363`, key `revela/`.
+Necesita `uv` y `zip` (para las capas de Pillow y rsa). Estado en `jyj-reto-tfstate-497502378363`, key `revela/`.
+El correo de las alarmas va en `infra/terraform.tfvars` (ignorado por git): `correo_alertas = "tu@correo.com"`.
+Después del primer apply llega un correo de SNS para confirmar la suscripción.
 
 ```bash
 cd infra
@@ -49,7 +51,25 @@ terraform output web_url
 Probar la página en local contra la API real: `terraform output -raw config_js > ../web/config.js`
 y `cd ../web && python -m http.server 8000` (localhost:8000 está permitido en CORS).
 
-Destruir: `terraform destroy` (los buckets tienen `force_destroy`).
+Destruir: `terraform destroy` (los buckets tienen `force_destroy`) y `scripts/borrar_caras.sh` (las colecciones de
+caras las crea la API, no Terraform). El destroy también desactiva la etiqueta de costos `Proyecto` en Billing.
+
+## Operación (módulo `operacion` y ajustes en los demás)
+
+- **Tablero de CloudWatch** `jyj-revela` (`terraform output tablero`): fotos analizadas y fallidas, segundos por foto
+  (p50/p90), invocaciones/errores/throttles de las 3 Lambdas, peticiones y errores de la API, cola y DLQ, y llamadas a
+  Rekognition y Bedrock. Estas dos últimas son de toda la cuenta, porque esos servicios no tienen recursos propios.
+- **Alarmas por correo (SNS):** análisis fallido en Step Functions, mensajes en la DLQ y 5xx en la API. Sin tráfico no
+  se disparan (`notBreaching`).
+- **X-Ray:** Step Functions y las 3 Lambdas en modo `Active`. La traza sigue cada foto por el flujo. API Gateway HTTP
+  no aparece porque X-Ray solo existe en las APIs REST.
+- **Presupuesto (AWS Budgets):** USD 10 al mes, filtrado por la etiqueta `Proyecto=revela`, que Terraform activa en Billing
+  y que tarda hasta 24 h en contar. Avisa al 50 % real y al 100 % proyectado. Rekognition, Bedrock y Location cobran por
+  llamada y no llevan etiqueta: ese gasto lo acotan los cupos por usuario y el throttling de la API. Un presupuesto de
+  toda la cuenta saltaría por el uso del resto del curso.
+- **Ciclo de vida en S3:** `fotos/` (el archivo completo) pasa a Glacier Instant Retrieval a los 30 días; cuesta ~1/6
+  y se lee al instante, con un cobro pequeño por GB leído. Miniaturas y `publicas/` se quedan en Standard. "Buscar caras"
+  lee `publicas/` para no tocar el archivo de Glacier. Las subidas multiparte abandonadas se borran al día.
 
 ## Notas
 

@@ -60,6 +60,25 @@ module "api" {
   script_capa  = "${path.module}/../scripts/capa.sh"
 }
 
+variable "correo_alertas" {
+  description = "Correo para alarmas y presupuesto; va en terraform.tfvars (no se sube al repo)"
+  type        = string
+  validation {
+    condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.correo_alertas))
+    error_message = "correo_alertas debe ser un correo."
+  }
+}
+
+module "operacion" {
+  source          = "./modules/operacion"
+  prefijo         = local.prefijo
+  correo          = var.correo_alertas
+  maquina_estados = module.pipeline.maquina_estados
+  cola_errores    = module.pipeline.cola_errores
+  funciones       = module.pipeline.funciones
+  api_id          = module.api.api_id
+}
+
 module "web" {
   source        = "./modules/web"
   prefijo       = local.prefijo

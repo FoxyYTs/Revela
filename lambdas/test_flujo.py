@@ -525,7 +525,7 @@ def test_portada_y_volver_a_buscar_caras(aws, traductor, caras, monkeypatch):
 
     # Volver a buscar en la foto de antes, con el filtro de calidad permisivo: queda en el grupo de la misma persona
     s.add_response("index_faces", caras_indexadas("c3"), {"CollectionId": coleccion, "ExternalImageId": antes, "MaxFaces": 10,
-                                                          "QualityFilter": "LOW", "Image": {"S3Object": {"Bucket": "revela-test", "Name": f"fotos/{USUARIO}/{antes}.jpg"}}})
+                                                          "QualityFilter": "LOW", "Image": {"S3Object": {"Bucket": "revela-test", "Name": f"publicas/{USUARIO}/{antes}.jpg"}}})
     s.add_response("search_users", {"UserMatches": [{"Similarity": 95.0, "User": {"UserId": persona["id"], "UserStatus": "ACTIVE"}}]})
     s.add_response("associate_faces", asociada("c3"))
     assert llamar("POST /fotos/{id}/caras", foto=antes)[1] == {"personas": [persona["id"]]}

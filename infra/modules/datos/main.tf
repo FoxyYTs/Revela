@@ -21,6 +21,34 @@ resource "aws_s3_bucket_public_access_block" "fotos" {
   restrict_public_buckets = true
 }
 
+# Los archivos completos (fotos/) casi no se vuelven a abrir pasado un mes: Glacier Instant Retrieval cuesta ~1/6 del
+# almacenamiento y se lee al instante. Miniaturas y publicas/ se quedan en Standard (se ven seguido; < 128 KB no pasa igual)
+resource "aws_s3_bucket_lifecycle_configuration" "fotos" {
+  bucket = aws_s3_bucket.fotos.id
+
+  rule {
+    id     = "originales-a-glacier-ir"
+    status = "Enabled"
+    filter {
+      prefix = "fotos/"
+    }
+    transition {
+      days          = 30
+      storage_class = "GLACIER_IR"
+    }
+  }
+
+  # Subidas que se quedaron a medias (el navegador se cerró): no cobrar por partes huérfanas
+  rule {
+    id     = "limpiar-subidas-incompletas"
+    status = "Enabled"
+    filter {}
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 1
+    }
+  }
+}
+
 resource "aws_s3_bucket_cors_configuration" "fotos" {
   bucket = aws_s3_bucket.fotos.id
 

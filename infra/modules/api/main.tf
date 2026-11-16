@@ -92,6 +92,12 @@ resource "aws_iam_role" "api" {
   assume_role_policy = data.aws_iam_policy_document.assume_lambda.json
 }
 
+# X-Ray: cada Lambda manda su segmento; API Gateway HTTP no participa (X-Ray solo existe en las APIs REST)
+resource "aws_iam_role_policy_attachment" "api_xray" {
+  role       = aws_iam_role.api.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
 resource "aws_iam_role_policy_attachment" "api_logs" {
   role       = aws_iam_role.api.name
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
@@ -141,10 +147,13 @@ resource "aws_lambda_layer_version" "firmas" {
 }
 
 resource "aws_lambda_function" "api" {
-  function_name    = "${var.prefijo}-api"
-  role             = aws_iam_role.api.arn
-  runtime          = "python3.12"
-  handler          = "api.lambda_handler"
+  function_name = "${var.prefijo}-api"
+  role          = aws_iam_role.api.arn
+  runtime       = "python3.12"
+  handler       = "api.lambda_handler"
+  tracing_config {
+    mode = "Active"
+  }
   layers           = [aws_lambda_layer_version.firmas.arn]
   filename         = var.zip
   source_code_hash = var.zip_hash
@@ -237,6 +246,14 @@ resource "aws_lambda_permission" "apigw" {
   function_name = aws_lambda_function.api.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.this.execution_arn}/*/*"
+}
+
+output "api_id" {
+  value = aws_apigatewayv2_api.this.id
+}
+
+output "funcion" {
+  value = aws_lambda_function.api.function_name
 }
 
 output "url" {
