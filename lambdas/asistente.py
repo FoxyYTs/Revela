@@ -37,6 +37,8 @@ Ayudas a encontrar fotos del usuario con tus herramientas:
 - buscar_fotos combina filtros: texto (lo que se ve o se lee en la foto), personas (nombres), lugar (ciudad,
   departamento o país) y un rango de fechas AAAA-MM-DD. Convierte fechas relativas ("el año pasado", "en diciembre")
   en ese rango. Pon cada parte del pedido en su filtro, no todo en texto.
+- "Fotos con Ana y Luis" o "juntas" son fotos donde salen todas (alguna=false); "un álbum de Ana, Luis y Eva" o
+  "las fotos de cada una" son fotos donde sale cualquiera de ellas (alguna=true).
 - Si un nombre no coincide con nadie, usa personas() para ver los nombres que existen.
 - lugares() lista las ciudades donde hay fotos.
 - crear_album guarda en un álbum las fotos de la última búsqueda; úsalo solo si el usuario pide un álbum.
@@ -44,7 +46,7 @@ Las fotos que encuentres se le muestran al usuario debajo de tu respuesta: no la
 Si el usuario se refiere a "esas fotos", son las de la última búsqueda: no vuelvas a buscar.
 Si una búsqueda no da resultados, intenta tú mismo lo razonable (revisar los nombres, quitar un filtro) antes de
 responder. Haz una pregunta solo si de verdad falta un dato, y si el usuario acepta lo que propusiste, hazlo ya.
-Responde en español, en una a tres frases, diciendo qué encontraste o por qué no hubo resultados."""
+Responde en español y en texto plano (sin markdown), en una a tres frases, diciendo qué encontraste o por qué no hubo resultados."""
 
 
 def herramientas(usuario, estado):
@@ -71,15 +73,17 @@ def herramientas(usuario, estado):
 
     @tool
     def buscar_fotos(texto: str | None = None, personas: list[str] | None = None, lugar: str | None = None,
-                     desde: str | None = None, hasta: str | None = None) -> str:
+                     desde: str | None = None, hasta: str | None = None, alguna: bool = False) -> str:
         """Busca fotos del usuario; todos los filtros que se den deben cumplirse a la vez.
 
         Args:
             texto: lo que se ve o se lee en la foto, por ejemplo "perro" o "gente comiendo en la playa".
-            personas: nombres de personas que deben aparecer en la foto.
+            personas: nombres de personas que deben aparecer en la foto (todas juntas, salvo con alguna=true).
             lugar: ciudad, departamento o país.
             desde: primer día del rango, AAAA-MM-DD.
             hasta: último día del rango, AAAA-MM-DD.
+            alguna: true si basta con que salga una de las personas, por ejemplo "un álbum de Ana, Luis y Eva";
+                false si tienen que salir juntas en la misma foto.
         """
         for fecha in (desde, hasta):
             if fecha:
@@ -96,6 +100,11 @@ def herramientas(usuario, estado):
                     return f"No hay ninguna persona llamada «{nombre}»."
                 listas.append([f for p in ids for f in ids_de(f"P#{p}#")])
                 filtros.append(f"persona {nombre}")
+            if alguna and len(listas) > 1:
+                # Una sola lista con las fotos de cualquiera, de la más nueva a la más vieja (fecha_orden está en el SK)
+                fechas = {i["foto"]: i["SK"].split("#", 2)[2] for i in api.consultar(pk, "P#", ProjectionExpression="foto, SK")}
+                listas = [sorted({f for lista in listas for f in lista}, key=fechas.get, reverse=True)]
+                filtros = ["alguna de " + ", ".join(personas)]
         if lugar:
             listas.append(ids_de(f"L#{normalizar(lugar)}#"))
             filtros.append(f"lugar {lugar}")
@@ -155,7 +164,7 @@ def preguntar(usuario, pregunta, historial=(), fotos=()):
     agente = Agent(model=BedrockModel(model_id=MODELO, temperature=0.2), callback_handler=None, messages=list(historial),
                    system_prompt=INSTRUCCION.format(hoy=datetime.now(api.COLOMBIA).strftime("%Y-%m-%d")),
                    tools=herramientas(usuario, estado))
-    respuesta = str(agente(pregunta)).strip()
+    respuesta = str(agente(pregunta)).replace("**", "").strip()  # la página muestra texto plano
     fotos = [api.resumen(i) for i in api.leer_fotos(f"U#{usuario}", estado["ultimas"][:100]).values()]
     return {"respuesta": respuesta, "fotos": fotos, **({"album": estado["album"]} if "album" in estado else {})}
 

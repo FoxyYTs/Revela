@@ -700,16 +700,21 @@ def test_asistente_combina_filtros(aws):
 
     estado = {}
     personas, lugares, buscar_fotos, crear_album = asistente.herramientas(USUARIO, estado)
-    assert json.loads(personas()) == ["Juliana"]
+    assert json.loads(personas()) == ["Juliana"]  # "otra" no tiene nombre todavía
     assert lugares() == "Ninguna foto tiene ubicación."  # lee el gps, que estas fotos no tienen
 
     r = json.loads(buscar_fotos(personas=["juliana"], lugar="cartagena", desde="2025-01-01", hasta="2025-12-31"))
     assert r["encontradas"] == 1 and r["fotos"][0]["fecha"] == "2025-12-24" and estado["ultimas"] == [buena]
     vacia = json.loads(buscar_fotos(personas=["Juliana"], lugar="Medellín", desde="2024-01-01", hasta="2024-12-31"))
     assert vacia["encontradas"] == 0 and vacia["cada_filtro_por_separado"] == {"persona Juliana": 3, "lugar Medellín": 1}
+    api.tabla.put_item(Item={"PK": f"U#{USUARIO}", "SK": f"PERSONA#{otra}", "nombre": "Sara"})
+    foto_lista("5" * 32, "2025-07-01", "Cali", otra)
+    assert json.loads(buscar_fotos(personas=["Juliana", "Sara"]))["encontradas"] == 0  # nunca juntas
+    assert json.loads(buscar_fotos(personas=["Juliana", "Sara"], alguna=True))["encontradas"] == 4
+    assert estado["ultimas"] == [buena, "5" * 32, otra_ciudad, vieja]  # cualquiera de las dos, por fecha
     assert json.loads(buscar_fotos(lugar="Cartagena"))["encontradas"] == 3
     assert estado["ultimas"] == [buena, sin_ella, vieja]  # de la más nueva a la más vieja
-    assert json.loads(buscar_fotos(desde="2025-01-01"))["encontradas"] == 3  # solo fechas: por el índice
+    assert json.loads(buscar_fotos(desde="2025-01-01"))["encontradas"] == 4  # solo fechas: por el índice
     assert "Pedro" in buscar_fotos(personas=["Pedro"]) and estado["ultimas"] == []
     with pytest.raises(ValueError):
         buscar_fotos(desde="24/12/2025")
