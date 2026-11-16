@@ -132,7 +132,7 @@ def estado_visible(item):
 def resumen(item):
     foto = {"id": item["SK"][2:], "nombre": item.get("nombre"), "estado": estado_visible(item),
             "fecha": item["fecha_orden"].split("#")[0], "etiquetas": item.get("etiquetas", [])[:5],
-            "descripcion": item.get("descripcion")}
+            "descripcion": item.get("descripcion"), "ancho": item.get("ancho"), "alto": item.get("alto")}  # la grilla respeta la forma
     # Las fotos en cuarentena nunca salen con URL
     if item["estado"] == "LISTA":
         foto["miniatura"] = firmar(item["miniatura"])

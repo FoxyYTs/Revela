@@ -141,16 +141,40 @@ $("#btn-salir").onclick = async () => {
   try { salir(); } catch {}
 };
 
-// ---------- Galería ----------
+// ---------- Estado y vistas ----------
 
-const estado = { q: "", persona: null, album: null, albumes: [], eligiendo: false, uniendo: false, siguiente: null, fotos: [], sondeo: null, cargada: 0, personas: { activo: false, personas: [] } };
+const estado = {
+  vista: "fotos", q: "", persona: null, album: null, albumes: [], eligiendo: false, uniendo: false,
+  siguiente: null, fotos: [], sondeo: null, cargada: 0, personas: { activo: false, personas: [] }, sel: new Set(),
+};
+const svg = (d) => `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="${d}"/></svg>`;
+const ICONO = { volver: "M19 12H5m0 0 6-6m-6 6 6 6", check: "m5 12 5 5 9-10" };
 
 function entrar() {
   estado.persona = estado.album = null;  // otra cuenta pudo dejar un filtro puesto
+  estado.sel.clear();
   $("#acceso").classList.add("oculto");
   $("#app").classList.remove("oculto");
+  vista("fotos");
   cargar();
 }
+
+function vista(nombre) {
+  estado.vista = nombre;
+  for (const v of ["fotos", "explorar", "albumes", "mapa"]) $(`#v-${v}`).classList.toggle("oculto", v !== nombre);
+  document.querySelectorAll(".secciones button").forEach((b) =>
+    b.dataset.vista === nombre ? b.setAttribute("aria-current", "page") : b.removeAttribute("aria-current"));
+  limpiarSeleccion();
+  if (nombre === "explorar") cargarExplorar();
+  if (nombre === "albumes") cargarAlbumes().catch((e) => aviso(e.message));
+  if (nombre === "mapa") verMapa();
+}
+
+document.querySelectorAll(".secciones button").forEach((b) => (b.onclick = () => {
+  // "Fotos" desde otra sección o con un filtro puesto vuelve a la línea de tiempo completa
+  if (b.dataset.vista === "fotos") return buscar("");
+  vista(b.dataset.vista);
+}));
 
 async function cargar(mas = false) {
   try {
@@ -164,27 +188,47 @@ async function cargar(mas = false) {
     if (!mas) estado.cargada = Date.now();
     estado.siguiente = r.siguiente;
     pintar();
-    if (!mas) { cargarEtiquetas().catch(() => {}); cargarPersonas().catch(() => {}); cargarAlbumes().catch(() => {}); }
+    if (!mas) { cargarPersonas().catch(() => {}); cargarAlbumes().catch(() => {}); }
   } catch (e) { if (e.message !== "sesión cerrada") aviso(e.message); }
-}
-
-async function cargarEtiquetas() {
-  const { etiquetas } = await api("GET", "/etiquetas");
-  $("#chips").replaceChildren(...etiquetas.slice(0, 14).map((e) =>
-    h("button", { className: "chip" + (normal(e.etiqueta) === normal(estado.q) ? " activo" : ""), onclick: () => buscar(e.etiqueta) },
-      h("b", { textContent: e.etiqueta }), ` ${e.fotos}`)));
 }
 
 const normal = (t) => t.normalize("NFD").replace(/[̀-ͯ]/g, "").toLowerCase().trim();
 
 function buscar(q, persona = null, album = null) {
-  if (!$("#vista-mapa").classList.contains("oculto")) verMapa(false);
   $("#q").value = q;
   estado.q = q.trim();
   estado.persona = persona;
   estado.album = album;
   estado.eligiendo = estado.uniendo = false;
+  vista("fotos");
   cargar();
+}
+
+$("#form-buscar").onsubmit = (e) => { e.preventDefault(); $("#q").blur(); buscar($("#q").value); };
+$("#q").oninput = () => { if (!$("#q").value && estado.q) buscar(""); };
+
+// ---------- Explorar: personas, lugares y cosas ----------
+
+async function cargarExplorar() {
+  try {
+    const [, { fotos }, { etiquetas }] = await Promise.all([cargarPersonas(), api("GET", "/lugares"), api("GET", "/etiquetas")]);
+    // Un lugar por ciudad, con la foto más reciente de portada
+    const ciudades = new Map();
+    for (const f of fotos) {
+      const ciudad = (f.lugar || "").split(",")[0].trim();
+      if (!ciudad) continue;
+      const c = ciudades.get(ciudad) || { ciudad, region: f.lugar.split(",").slice(1).join(",").trim(), miniatura: f.miniatura, n: 0 };
+      c.n++;
+      ciudades.set(ciudad, c);
+    }
+    $("#lugares").replaceChildren(...[...ciudades.values()].sort((a, b) => b.n - a.n).map((c) =>
+      h("button", { className: "lugar", onclick: () => buscar(c.ciudad) },
+        h("img", { src: c.miniatura, alt: "", loading: "lazy" }), h("b", { textContent: c.ciudad }),
+        h("small", { textContent: `${c.n} foto(s)` }))));
+    if (!ciudades.size) $("#lugares").replaceChildren(h("p", { className: "invitacion", textContent: "Cuando subas fotos con ubicación, sus lugares aparecen aquí." }));
+    $("#chips").replaceChildren(...etiquetas.slice(0, 30).map((e) =>
+      h("button", { className: "chip", onclick: () => buscar(e.etiqueta) }, h("b", { textContent: e.etiqueta }), ` ${e.fotos}`)));
+  } catch (e) { if (e.message !== "sesión cerrada") aviso(e.message); }
 }
 
 // ---------- Álbumes ----------
@@ -192,26 +236,23 @@ function buscar(q, persona = null, album = null) {
 async function cargarAlbumes() {
   estado.albumes = (await api("GET", "/albumes")).albumes;
   $("#a-lista").replaceChildren(...estado.albumes.map((a) =>
-    h("button", { className: "album", onclick: () => { $("#dlg-albumes").close(); buscar("", null, a); } },
-      a.portada ? h("img", { src: a.portada, alt: "" }) : h("span", { className: "sin-portada" }),
-      h("span", {}, h("b", { textContent: a.nombre }), h("small", { textContent: `${a.fotos} foto(s)${a.enlace ? " · compartido" : ""}` })))));
-  if (!estado.albumes.length) $("#a-lista").replaceChildren(h("p", { textContent: "Todavía no tienes álbumes." }));
+    h("button", { className: "album", onclick: () => buscar("", null, a) },
+      a.portada ? h("img", { src: a.portada, alt: "", loading: "lazy" }) : h("span", { className: "sin-portada" }),
+      h("b", { textContent: a.nombre }), h("small", { textContent: `${a.fotos} foto(s)${a.enlace ? " · compartido" : ""}` }))));
+  if (!estado.albumes.length) $("#a-lista").replaceChildren(h("p", { className: "invitacion", textContent: "Todavía no tienes álbumes. Crea uno, o busca algo y agrega los resultados de una vez." }));
 }
 
-$("#btn-albumes").onclick = () => { cargarAlbumes().catch((e) => aviso(e.message)); $("#dlg-albumes").showModal(); };
-$("#a-cerrar").onclick = () => $("#dlg-albumes").close();
 $("#a-nuevo").onsubmit = async (e) => {
   e.preventDefault();
   try {
     const a = await api("POST", "/albumes", { nombre: e.target.nombre.value });
     e.target.reset();
-    $("#dlg-albumes").close();
     buscar("", null, a);
   } catch (err) { aviso(err.message); }
 };
 
 // Llena un <select> para meter fotos a un álbum (o a uno nuevo con el nombre sugerido); dentro de un álbum, quitar
-function selectorAlbum(sel, ids, titulo, sugerido, alQuitar) {
+function selectorAlbum(sel, ids, titulo, sugerido, alQuitar, alTerminar = () => {}) {
   sel.replaceChildren(h("option", { value: "", textContent: titulo }),
     ...(estado.album && alQuitar ? [h("option", { value: "quitar", textContent: `Quitar de «${estado.album.nombre}»` })] : []),
     ...estado.albumes.filter((a) => a.id !== estado.album?.id).map((a) => h("option", { value: a.id, textContent: `Agregar a «${a.nombre}»` })),
@@ -233,6 +274,7 @@ function selectorAlbum(sel, ids, titulo, sugerido, alQuitar) {
       const r = await api("PUT", `/albumes/${album}`, { agregar: ids });
       aviso(ids.length > 1 ? `Listo: el álbum «${r.nombre}» tiene ${r.fotos} foto(s)` : `Agregada a «${r.nombre}»`);
       cargarAlbumes().catch(() => {});
+      alTerminar();
     } catch (e) { aviso(e.message); }
   };
   return sel;
@@ -247,28 +289,26 @@ async function copiar(url) {
   catch { prompt("Copia el enlace:", url); }
 }
 
-function barraAlbum() {
+const chip = (textContent, onclick) => h("button", { className: "chip", textContent, onclick });
+
+function accionesAlbum() {
   const a = estado.album, ruta = `/albumes/${a.id}`;
-  const chip = (textContent, onclick) => h("button", { className: "chip", textContent, onclick });
   return [
-    `${estado.fotos.length} foto(s) en «${a.nombre}»`,
-    chip("✏️ Renombrar", () => {
+    chip("Renombrar", () => {
       const nombre = prompt("Nombre del álbum", a.nombre);
       if (nombre !== null) accionAlbum(() => api("PUT", ruta, { nombre }));
     }),
     ...(a.enlace
-      ? [chip("🔗 Copiar enlace", () => copiar(a.enlace.url)),
-         h("small", { textContent: `vence ${fmtFecha(a.enlace.expira)}` }),
+      ? [chip("Copiar enlace", () => copiar(a.enlace.url)),
          chip("Dejar de compartir", () => accionAlbum(() => api("DELETE", `${ruta}/enlace`)))]
-      : [chip("🔗 Compartir", () => {
+      : [chip("Compartir", () => {
           const dias = Number(prompt("¿Cuántos días dura el enlace? (1, 7 o 30)", "7"));
           if (dias) accionAlbum(async () => copiar((await api("POST", `${ruta}/enlace`, { dias })).url));
         })]),
-    chip("🗑️ Borrar álbum", async () => {
+    chip("Borrar álbum", async () => {
       if (!confirm(`¿Borrar el álbum «${a.nombre}»? Las fotos se quedan en tu galería.`)) return;
-      try { await api("DELETE", ruta); buscar(""); } catch (e) { aviso(e.message); }
+      try { await api("DELETE", ruta); vista("albumes"); } catch (e) { aviso(e.message); }
     }),
-    chip("✕ Ver todas", () => buscar("")),
   ];
 }
 
@@ -289,13 +329,15 @@ function cara(p) {
   return h("span", { className: "cara" }, img);
 }
 
+const botonPersona = (p, onclick) => h("button", { className: "persona", title: `${p.fotos} foto(s)`, onclick },
+  cara(p), h("span", { textContent: p.nombre || "Sin nombre" }));
+
 async function cargarPersonas() {
   estado.personas = await api("GET", "/personas");
-  $("#personas").replaceChildren(...estado.personas.personas.map((p) =>
-    h("button", { className: "persona" + (estado.persona === p.id ? " activo" : ""), title: `${p.fotos} foto(s)`,
-                  onclick: () => estado.uniendo ? unir(p) : buscar("", estado.persona === p.id ? null : p.id) },
-      cara(p), h("span", { textContent: p.nombre || "Sin nombre" }))));
-  $("#personas").classList.toggle("oculto", !estado.personas.personas.length);
+  const { activo, personas } = estado.personas;
+  $("#personas").replaceChildren(...personas.map((p) => botonPersona(p, () => buscar("", p.id))));
+  $("#personas-invitacion").classList.toggle("oculto", activo);
+  if (activo && !personas.length) $("#personas").replaceChildren(h("p", { className: "invitacion", textContent: "Sube fotos con personas: aparecen aquí agrupadas." }));
 }
 
 async function nombrar() {
@@ -306,8 +348,7 @@ async function nombrar() {
 
 async function unir(otra) {
   estado.uniendo = false;
-  if (otra.id !== estado.persona &&
-      confirm(`¿${otra.nombre || "Esa persona"} y ${nombrePersona(estado.persona)} son la misma? Sus fotos quedan juntas y las nuevas se reconocen como una sola.`)) {
+  if (confirm(`¿${otra.nombre || "Esa persona"} y ${nombrePersona(estado.persona)} son la misma? Sus fotos quedan juntas y las nuevas se reconocen como una sola.`)) {
     try { await api("POST", `/personas/${estado.persona}/unir`, { persona: otra.id }); await cargarPersonas(); return cargar(); } catch (e) { aviso(e.message); }
   }
   pintar();
@@ -326,10 +367,12 @@ function pintarConsentimiento() {
   $("#p-desactivar").classList.toggle("oculto", !activo);
 }
 
-$("#btn-personas").onclick = () => { pintarConsentimiento(); $("#dlg-personas").showModal(); };
+const abrirConsentimiento = () => { $("#ajustes").hidePopover?.(); pintarConsentimiento(); $("#dlg-personas").showModal(); };
+$("#btn-personas").onclick = abrirConsentimiento;
+$("#btn-personas-2").onclick = abrirConsentimiento;
 $("#p-cerrar").onclick = () => $("#dlg-personas").close();
 $("#p-activar").onclick = async () => {
-  try { estado.personas = await api("PUT", "/personas"); pintarConsentimiento(); } catch (e) { aviso(e.message); }
+  try { estado.personas = await api("PUT", "/personas"); pintarConsentimiento(); cargarPersonas(); } catch (e) { aviso(e.message); }
 };
 $("#p-desactivar").onclick = async () => {
   if (!confirm("Se borran todas las huellas de caras y los nombres que pusiste. ¿Seguir?")) return;
@@ -340,53 +383,117 @@ $("#p-desactivar").onclick = async () => {
   } catch (e) { aviso(e.message); }
 };
 
-$("#form-buscar").onsubmit = (e) => { e.preventDefault(); buscar($("#q").value); };
-$("#q").oninput = () => { if (!$("#q").value && estado.q) buscar(""); };
+// ---------- Línea de tiempo ----------
 
-function tarjeta(f) {
-  const contenido = {
-    LISTA: () => [h("img", { src: f.miniatura, alt: f.descripcion || f.etiquetas.join(", ") || f.nombre || "Foto", loading: "lazy" }),
-                  h("span", { className: "pie", textContent: f.etiquetas.slice(0, 3).join(" · ") })],
-    PROCESANDO: () => [h("span", { className: "aviso revelando", textContent: "Revelando…" })],
-    CUARENTENA: () => [h("span", { className: "aviso", textContent: "🚫 Oculta por moderación" })],
-    ERROR: () => [h("span", { className: "aviso", textContent: "⚠️ No se pudo analizar" })],
-  }[f.estado]();
-  return h("button", { className: "foto", onclick: () => estado.eligiendo ? elegirPortada(f.id) : abrir(f.id), title: (f.parecida ? "Parecida a tu búsqueda · " : "") + (f.nombre || "") }, contenido);
+const hoy = () => new Date().toDateString();
+function fmtDia(dia) {
+  const d = new Date(`${dia}T12:00:00`);
+  if (d.toDateString() === hoy()) return "Hoy";
+  if (d.toDateString() === new Date(Date.now() - 864e5).toDateString()) return "Ayer";
+  return d.toLocaleDateString("es-CO", { weekday: "short", day: "numeric", month: "short",
+                                         ...(d.getFullYear() !== new Date().getFullYear() ? { year: "numeric" } : {}) });
 }
 
-function pintar() {
-  $("#grilla").classList.toggle("eligiendo", estado.eligiendo);
-  $("#personas").classList.toggle("eligiendo", estado.uniendo);
-  $("#grilla").replaceChildren(...estado.fotos.map(tarjeta));
-  $("#vacio").classList.toggle("oculto", estado.fotos.length > 0 || !!estado.q || !!estado.persona || !!estado.album);
-  $("#btn-mas").classList.toggle("oculto", !estado.siguiente);
-  const eb = $("#estado-busqueda");
-  eb.classList.toggle("oculto", !estado.q && !estado.persona && !estado.album);
-  const parecidas = estado.fotos.filter((f) => f.parecida).length;
+// Mantener presionado (táctil) marca la foto, como en las galerías de los celulares
+function presionLarga(el, fn) {
+  let t = null;
+  el.addEventListener("pointerdown", (e) => { if (e.pointerType !== "mouse") t = setTimeout(() => { t = "hecho"; fn(); }, 450); });
+  for (const ev of ["pointerup", "pointerleave", "pointercancel"]) el.addEventListener(ev, () => { if (t !== "hecho") clearTimeout(t); });
+  el.addEventListener("click", (e) => { if (t === "hecho") { e.stopImmediatePropagation(); t = null; } }, true);
+}
+
+function tarjeta(f) {
+  const r = f.ancho && f.alto ? f.ancho / f.alto : 1;
+  const etiqueta = f.descripcion || f.etiquetas.join(", ") || f.nombre || "Foto";
+  const contenido = {
+    LISTA: () => [h("img", { src: f.miniatura, alt: "", loading: "lazy" })],
+    PROCESANDO: () => [h("span", { className: "aviso revelando", textContent: "Revelando…" })],
+    CUARENTENA: () => [h("span", { className: "aviso", textContent: "Oculta por moderación" })],
+    ERROR: () => [h("span", { className: "aviso", textContent: "No se pudo analizar" })],
+  }[f.estado]();
+  const abrirFoto = h("button", { className: "abrir", ariaLabel: `Abrir: ${etiqueta}`, title: f.nombre || "",
+    onclick: () => estado.eligiendo ? elegirPortada(f.id) : estado.sel.size ? marcar(f.id) : abrir(f.id) });
+  const check = h("button", { className: "check", ariaLabel: "Seleccionar", onclick: () => marcar(f.id) });
+  check.innerHTML = svg(ICONO.check);
+  const el = h("div", { className: "foto" + (estado.sel.has(f.id) ? " marcada" : "") },
+    abrirFoto, ...contenido, f.parecida ? h("span", { className: "parecida", textContent: "parecida" }) : null, check);
+  el.dataset.id = f.id;
+  el.style.setProperty("--r", Math.min(Math.max(r, 0.5), 2.5).toFixed(3));
+  presionLarga(abrirFoto, () => marcar(f.id));
+  return el;
+}
+
+// Por día en la línea de tiempo, persona y álbum; una búsqueda queda en el orden de relevancia
+function grupos() {
+  if (estado.q) return [[null, estado.fotos]];
+  const porDia = new Map();
+  for (const f of estado.fotos) {
+    const dia = f.fecha.slice(0, 10);
+    porDia.set(dia, [...(porDia.get(dia) || []), f]);
+  }
+  return [...porDia];
+}
+
+function contexto() {
+  const ctx = $("#contexto");
+  ctx.classList.toggle("oculto", !estado.q && !estado.persona && !estado.album);
+  if (ctx.classList.contains("oculto")) return;
+  const volverA = estado.album ? "albumes" : estado.persona ? "explorar" : null;
+  const volver = h("button", { className: "volver", ariaLabel: "Volver", onclick: () => volverA ? vista(volverA) : buscar("") });
+  volver.innerHTML = svg(ICONO.volver);
+  const n = estado.fotos.length, parecidas = estado.fotos.filter((f) => f.parecida).length;
+  let titulo, sub, acciones = [];
   if (estado.album) {
-    eb.replaceChildren(...barraAlbum());
+    titulo = [estado.album.nombre];
+    sub = `${n} foto(s)` + (estado.album.enlace ? ` · compartido hasta el ${fmtFecha(estado.album.enlace.expira)}` : "");
+    acciones = accionesAlbum();
   } else if (estado.persona) {
-    const cancelar = h("button", { className: "chip", textContent: "Cancelar", onclick: () => { estado.eligiendo = estado.uniendo = false; pintar(); } });
-    eb.replaceChildren(...(estado.eligiendo ? ["Toca la foto que quieres de portada", cancelar]
-      : estado.uniendo ? ["Toca arriba, en la fila de caras, a la otra persona", cancelar]
-      : [`${estado.fotos.length} foto(s) de ${nombrePersona(estado.persona)}`,
-         h("button", { className: "chip", textContent: "✏️ Ponerle nombre", onclick: nombrar }),
-         h("button", { className: "chip", textContent: "🖼️ Elegir portada", onclick: () => { estado.eligiendo = true; pintar(); } }),
-         h("button", { className: "chip", textContent: "🔗 Unir con…", onclick: () => { estado.uniendo = true; pintar(); } }),
-         h("button", { className: "chip", textContent: "✕ Ver todas", onclick: () => buscar("") })]));
-  } else if (estado.q) {
-    eb.replaceChildren(`${estado.fotos.length} foto(s) para “${estado.q}”` + (parecidas ? ` · ${parecidas} por parecido` : ""));
+    const p = estado.personas.personas.find((x) => x.id === estado.persona);
+    titulo = [p ? cara(p) : null, nombrePersona(estado.persona)];
+    sub = estado.eligiendo ? "Toca la foto que quieres de portada" : estado.uniendo ? "Toca a la otra persona" : `${n} foto(s)`;
+    acciones = estado.eligiendo || estado.uniendo
+      ? [chip("Cancelar", () => { estado.eligiendo = estado.uniendo = false; pintar(); })]
+      : [chip("Ponerle nombre", nombrar), chip("Elegir portada", () => { estado.eligiendo = true; pintar(); }),
+         chip("Es la misma que…", () => { estado.uniendo = true; pintar(); })];
+    if (estado.uniendo) {
+      acciones.push(h("div", { className: "personas uniendo" }, ...estado.personas.personas
+        .filter((x) => x.id !== estado.persona).map((x) => botonPersona(x, () => unir(x)))));
+    }
+  } else {
+    titulo = [estado.q];
+    sub = `${n} foto(s)` + (parecidas ? `, ${parecidas} por parecido` : "");
   }
   // Lo que se buscó (o la persona) se puede meter entero a un álbum: así se arman álbumes "por lo que se ve"
   const listas = estado.fotos.filter((f) => f.estado === "LISTA").map((f) => f.id);
   if ((estado.q || estado.persona) && !estado.eligiendo && !estado.uniendo && listas.length) {
-    eb.append(selectorAlbum(h("select", { className: "chip selector" }), listas, `📚 Agregar estas ${listas.length} a…`,
-                            estado.q || nombrePersona(estado.persona)));
+    acciones.unshift(selectorAlbum(h("select", { className: "chip selector" }), listas, `Agregar estas ${listas.length} a un álbum…`,
+                                   estado.q || nombrePersona(estado.persona)));
   }
+  ctx.replaceChildren(volver, h("h1", {}, ...titulo), h("p", { className: "sub", textContent: sub }),
+                      h("div", { className: "acciones-ctx" }, ...acciones));
+}
+
+function pintar() {
+  $("#linea").classList.toggle("eligiendo", estado.eligiendo);
+  $("#linea").classList.toggle("seleccionando", estado.sel.size > 0);
+  $("#linea").replaceChildren(...grupos().map(([dia, fotos]) => h("section", { className: "dia" },
+    dia ? h("h2", {}, fmtDia(dia), h("small", { textContent: `${fotos.length} foto(s)` })) : null,
+    h("div", { className: "fila" }, ...fotos.map(tarjeta)))));
+  contexto();
+
+  const vacio = $("#vacio");
+  vacio.classList.toggle("oculto", estado.fotos.length > 0);
+  vacio.replaceChildren(...(estado.album
+    ? [h("h2", { textContent: "Álbum vacío" }), h("p", { textContent: "Selecciona fotos en Fotos o busca algo, y agrégalas a este álbum." })]
+    : estado.q || estado.persona
+      ? [h("h2", { textContent: "Nada por aquí" }), h("p", { textContent: "Prueba con otra palabra o describe la escena: «niños en el parque»." })]
+      : [h("h2", { textContent: "Aún no hay fotos" }), h("p", { textContent: "Arrastra fotos aquí o usa Subir. Revela las etiqueta, lee su texto y las ordena por fecha." })]));
+  $("#btn-mas").classList.toggle("oculto", !estado.siguiente);
 
   // Mientras alguna foto se esté revelando, refresca la galería cada 3 s
   clearTimeout(estado.sondeo);
-  if (!estado.q && !estado.persona && !estado.album && estado.fotos.some((f) => f.estado === "PROCESANDO")) estado.sondeo = setTimeout(() => cargar(), 3000);
+  if (!estado.q && !estado.persona && !estado.album && !estado.sel.size && estado.fotos.some((f) => f.estado === "PROCESANDO"))
+    estado.sondeo = setTimeout(() => cargar(), 3000);
 }
 
 $("#btn-mas").onclick = () => cargar(true);
@@ -396,68 +503,144 @@ document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && !$("#app").classList.contains("oculto") && Date.now() - estado.cargada > 45 * 60000) cargar();
 });
 
-// ---------- Detalle ----------
+// ---------- Selección múltiple ----------
+
+function marcar(id) {
+  estado.sel.has(id) ? estado.sel.delete(id) : estado.sel.add(id);
+  document.querySelector(`.foto[data-id="${id}"]`)?.classList.toggle("marcada", estado.sel.has(id));
+  pintarSeleccion();
+}
+
+function limpiarSeleccion() {
+  estado.sel.clear();
+  document.querySelectorAll(".foto.marcada").forEach((el) => el.classList.remove("marcada"));
+  pintarSeleccion();
+}
+
+function pintarSeleccion() {
+  const n = estado.sel.size, ids = [...estado.sel];
+  $("#seleccion").classList.toggle("oculto", !n);
+  $("#linea").classList.toggle("seleccionando", n > 0);
+  if (!n) return;
+  $("#sel-n").textContent = `${n} seleccionada(s)`;
+  const listas = ids.filter((id) => estado.fotos.find((f) => f.id === id)?.estado === "LISTA");
+  $("#sel-album").classList.toggle("oculto", !listas.length);
+  selectorAlbum($("#sel-album"), listas, "Agregar a un álbum…", estado.q, () => { limpiarSeleccion(); cargar(); }, limpiarSeleccion);
+}
+
+$("#sel-cancelar").onclick = limpiarSeleccion;
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && estado.sel.size && !$("#visor").open) limpiarSeleccion(); });
+$("#sel-borrar").onclick = async () => {
+  const ids = [...estado.sel];
+  if (!confirm(`¿Borrar ${ids.length} foto(s) para siempre?`)) return;
+  for (const id of ids) {
+    try { await api("DELETE", `/fotos/${id}`); estado.fotos = estado.fotos.filter((f) => f.id !== id); }
+    catch (e) { aviso(e.message); break; }
+  }
+  limpiarSeleccion();
+  pintar();
+  cargarPersonas().catch(() => {});
+};
+
+// ---------- Visor a pantalla completa ----------
 
 const fmtFecha = (iso) => iso ? new Date(iso).toLocaleString("es-CO", { dateStyle: "long", timeStyle: "short" }) : "—";
+const visor = { lista: [], i: 0, pedido: 0 };
 
-async function abrir(id) {
+function abrir(id, miniatura = "") {
+  visor.lista = estado.fotos.filter((f) => f.estado !== "PROCESANDO").map((f) => f.id);
+  visor.miniatura = miniatura;
+  if (!visor.lista.includes(id)) visor.lista = [id]; // desde el mapa: la foto puede no estar en la galería cargada
+  if (!$("#visor").open) {
+    $("#visor").showModal();
+    mostrarInfo(matchMedia("(min-width: 1000px)").matches);
+  }
+  ir(visor.lista.indexOf(id));
+}
+
+function mostrarInfo(si) {
+  $("#v-info").classList.toggle("oculto", !si);
+  $("#v-info-btn").setAttribute("aria-pressed", String(si));
+}
+
+async function ir(i) {
+  if (i < 0 || i >= visor.lista.length) return;
+  visor.i = i;
+  const id = visor.lista[i], pedido = ++visor.pedido;
+  $("#v-ant").classList.toggle("oculto", i === 0);
+  $("#v-sig").classList.toggle("oculto", i === visor.lista.length - 1);
+  // La miniatura aparece al instante; el original la reemplaza cuando llega
+  $("#v-img").src = estado.fotos.find((f) => f.id === id)?.miniatura || visor.miniatura || "";
   let f;
   try { f = await api("GET", `/fotos/${id}`); } catch (e) { return aviso(e.message); }
-  $("#d-img").src = f.original || "";
-  $("#d-img").alt = f.descripcion || (f.etiquetas || []).join(", ");
+  if (pedido !== visor.pedido) return; // ya pasó a otra foto
+  if (f.original) $("#v-img").src = f.original;
+  $("#v-img").alt = f.descripcion || (f.etiquetas || []).join(", ");
+  $("#v-img").classList.toggle("oculto", !f.original && !$("#v-img").src);
   $("#d-descripcion").textContent = f.descripcion || "";
-  $("#d-img").classList.toggle("oculto", !f.original);
   $("#d-nombre").textContent = f.nombre || "Foto sin nombre";
+  const cerrarY = (fn) => () => { $("#visor").close(); fn(); };
   $("#d-etiquetas").replaceChildren(
-    ...(f.personas || []).map((id) =>
-      h("button", { className: "chip activo", textContent: `👤 ${nombrePersona(id)}`, onclick: () => { $("#dialogo").close(); buscar("", id); } })),
-    ...(f.etiquetas || []).map((e) =>
-      h("button", { className: "chip", textContent: e, onclick: () => { $("#dialogo").close(); buscar(e); } })));
-
+    ...(f.personas || []).map((p) => h("button", { className: "chip activo", textContent: nombrePersona(p), onclick: cerrarY(() => buscar("", p)) })),
+    ...(f.etiquetas || []).map((e) => h("button", { className: "chip", textContent: e, onclick: cerrarY(() => buscar(e)) })));
   const filas = [
     ["Tomada", f.fecha_toma ? fmtFecha(f.fecha_toma) : "Sin fecha en la foto"],
     ["Cámara", f.camara || "—"],
     ["Tamaño", f.ancho ? `${f.ancho} × ${f.alto} px` : "—"],
     ["Lugar", f.gps ? [f.lugar?.nombre || `${f.gps.lat}, ${f.gps.lon}`,
                        f.gps_fuente === "subida" ? h("small", { textContent: " (ubicación al subir)", style: "color:var(--suave)" }) : null,
-                       h("br"), h("a", { href: "#", textContent: "Ver en el mapa", onclick: (e) => { e.preventDefault(); $("#dialogo").close(); verMapa(true, f.id); } })]
+                       h("br"), h("a", { href: "#", textContent: "Ver en el mapa", onclick: (e) => { e.preventDefault(); $("#visor").close(); vista("mapa"); verMapa(f.id); } })]
                     : "Sin ubicación"],
     ["Estado", { LISTA: "Lista", PROCESANDO: "Revelando…", CUARENTENA: `En cuarentena (${(f.moderacion || []).join(", ")})`, ERROR: "Error al analizar" }[f.estado]],
   ];
   $("#d-datos").replaceChildren(...filas.flatMap(([k, v]) => [h("dt", { textContent: k }), h("dd", { style: "margin:0" }, v)]));
   $("#d-texto").replaceChildren(...(f.texto ? [h("dt", { textContent: "Texto en la foto", style: "color:var(--suave);margin-bottom:4px" }), h("pre", { textContent: f.texto })] : []));
 
-  $("#d-caras").classList.toggle("oculto", !estado.personas.activo || f.estado !== "LISTA");
-  $("#d-caras").onclick = async () => {
-    $("#d-caras").disabled = true;
-    $("#d-caras").textContent = "Buscando…";
+  $("#v-caras").classList.toggle("oculto", !estado.personas.activo || f.estado !== "LISTA");
+  $("#v-caras").onclick = async () => {
+    $("#v-caras").disabled = true;
+    $("#v-caras").textContent = "Buscando…";
     try {
       const { personas } = await api("POST", `/fotos/${id}/caras`);
       await cargarPersonas();
       aviso(personas.length ? `Encontré ${personas.length} persona(s)` : "No encontré caras en esta foto");
-      $("#dialogo").close();
-      abrir(id);
+      ir(visor.i);
     } catch (e) { aviso(e.message); }
-    finally { $("#d-caras").disabled = false; $("#d-caras").textContent = "🔄 Buscar caras"; }
+    finally { $("#v-caras").disabled = false; $("#v-caras").textContent = "Buscar caras"; }
   };
-  // Agregar a un álbum (o quitar del que se está viendo); solo fotos listas
-  $("#d-album").classList.toggle("oculto", f.estado !== "LISTA");
-  selectorAlbum($("#d-album"), [id], "📚 Álbum…", "", () => { $("#dialogo").close(); cargar(); });
-  $("#d-borrar").onclick = async () => {
+  $("#v-album").classList.toggle("oculto", f.estado !== "LISTA");
+  selectorAlbum($("#v-album"), [id], "Álbum…", "", () => { $("#visor").close(); cargar(); });
+  $("#v-borrar").onclick = async () => {
     if (!confirm("¿Borrar esta foto para siempre?")) return;
     try {
       await api("DELETE", `/fotos/${id}`);
-      $("#dialogo").close();
       estado.fotos = estado.fotos.filter((x) => x.id !== id);
+      visor.lista.splice(visor.i, 1);
       pintar();
-      cargarEtiquetas(); cargarPersonas().catch(() => {});
+      cargarPersonas().catch(() => {});
+      visor.lista.length ? ir(Math.min(visor.i, visor.lista.length - 1)) : $("#visor").close();
     } catch (e) { aviso(e.message); }
   };
-  $("#dialogo").showModal();
 }
 
-$("#d-cerrar").onclick = () => $("#dialogo").close();
-$("#dialogo").onclick = (e) => { if (e.target === $("#dialogo")) $("#dialogo").close(); };
+$("#v-cerrar").onclick = () => $("#visor").close();
+$("#v-ant").onclick = () => ir(visor.i - 1);
+$("#v-sig").onclick = () => ir(visor.i + 1);
+$("#v-info-btn").onclick = () => mostrarInfo($("#v-info").classList.contains("oculto"));
+$("#visor").addEventListener("keydown", (e) => {
+  if (e.target.matches("select, input")) return;
+  if (e.key === "ArrowLeft") ir(visor.i - 1);
+  if (e.key === "ArrowRight") ir(visor.i + 1);
+  if (e.key === "i") $("#v-info-btn").click();
+});
+// Deslizar en el celular
+let inicioX = null;
+$("#v-escena").addEventListener("pointerdown", (e) => { inicioX = e.clientX; });
+$("#v-escena").addEventListener("pointerup", (e) => {
+  const dx = e.clientX - (inicioX ?? e.clientX);
+  if (Math.abs(dx) > 60) ir(visor.i + (dx < 0 ? 1 : -1));
+  inicioX = null;
+});
 
 // ---------- Ubicación al subir ----------
 
@@ -500,20 +683,14 @@ async function prepararMapa() {
   return (mapaEstado.mapa = mapa);
 }
 
-async function verMapa(mostrar, enfocar) {
-  $("#btn-mapa").classList.toggle("activo", mostrar);
-  $("#btn-mapa").setAttribute("aria-pressed", String(mostrar));
-  $("#vista-galeria").classList.toggle("oculto", mostrar);
-  $("#vista-mapa").classList.toggle("oculto", !mostrar);
-  if (!mostrar) return;
-
+async function verMapa(enfocar) {
   const aviso = $("#mapa-aviso");
   try {
     const [mapa, { fotos }] = await Promise.all([prepararMapa(), api("GET", "/lugares")]);
     mapa.resize();
     mapaEstado.marcadores.forEach((m) => m.remove());
     mapaEstado.marcadores = fotos.map((f) => new maplibregl.Marker({
-      element: h("button", { className: "marcador" + (f.aproximada ? " aproximada" : ""), onclick: () => abrir(f.id),
+      element: h("button", { className: "marcador" + (f.aproximada ? " aproximada" : ""), onclick: () => abrir(f.id, f.miniatura),
                              title: [f.lugar, f.descripcion].filter(Boolean).join(" — "),
                              ariaLabel: `Foto en ${f.lugar || "este lugar"}` },
                  h("img", { src: f.miniatura, alt: "" })),
@@ -535,7 +712,6 @@ async function verMapa(mostrar, enfocar) {
   }
 }
 
-$("#btn-mapa").onclick = () => verMapa($("#vista-mapa").classList.contains("oculto"));
 
 // ---------- Subidas: URL prefirmada → POST directo a S3 ----------
 
