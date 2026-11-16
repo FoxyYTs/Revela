@@ -92,6 +92,6 @@ def lambda_handler(event, _context):
                 enviar(destino, hoy, fotos, nombre)
                 resumen["correos"] += 1
         except ses.exceptions.MessageRejected as e:  # sandbox: el destinatario no está verificado
-            log.warning("SES rechazó el correo de un usuario: %s", e.response["Error"]["Message"][:120])
+            log.warning("SES rechazó un correo (%s); en sandbox el destinatario debe estar verificado", e.response["Error"]["Code"])  # el mensaje trae el correo
     log.info("Recuerdos: %s", resumen)
     return resumen
