@@ -14,6 +14,7 @@
   :root {
     --fondo: #121010; --panel: #1c1817; --borde: #2e2826; --texto: #efe8e4; --suave: #a3958f;
     --acento: #e5533d; --acento-2: #f2a65a; --ok: #7bc47f; --radio: 14px;
+    color-scheme: dark; /* listas desplegables y barras de scroll nativas también en oscuro */
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--fondo); color: var(--texto); font: 15px/1.5 Inter, system-ui, sans-serif; }
@@ -116,6 +117,9 @@
   .acciones { display: flex; flex-wrap: wrap; gap: 8px; margin-top: auto; }
   .acciones .btn { white-space: nowrap; }
   .acciones select { max-width: 100%; }
+  select.btn, select.chip { background: var(--panel); color: var(--texto); cursor: pointer; }
+  select.chip.selector { color: var(--acento-2); border-color: var(--acento-2); max-width: 100%; }
+  option { background: var(--panel); color: var(--texto); }
   .peligro { color: #ff8b7a; }
   @media (max-width: 760px) { .detalle { grid-template-columns: 1fr; } .info { max-height: none; } }
   /* Celular: encabezado compacto que no se queda fijo y galería de 3 columnas */

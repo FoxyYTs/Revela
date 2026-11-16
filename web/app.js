@@ -210,6 +210,34 @@ $("#a-nuevo").onsubmit = async (e) => {
   } catch (err) { aviso(err.message); }
 };
 
+// Llena un <select> para meter fotos a un álbum (o a uno nuevo con el nombre sugerido); dentro de un álbum, quitar
+function selectorAlbum(sel, ids, titulo, sugerido, alQuitar) {
+  sel.replaceChildren(h("option", { value: "", textContent: titulo }),
+    ...(estado.album && alQuitar ? [h("option", { value: "quitar", textContent: `Quitar de «${estado.album.nombre}»` })] : []),
+    ...estado.albumes.filter((a) => a.id !== estado.album?.id).map((a) => h("option", { value: a.id, textContent: `Agregar a «${a.nombre}»` })),
+    h("option", { value: "nuevo", textContent: "Agregar a un álbum nuevo…" }));
+  sel.onchange = async () => {
+    const valor = sel.value;
+    sel.value = "";
+    try {
+      if (valor === "quitar") {
+        await api("PUT", `/albumes/${estado.album.id}`, { quitar: ids });
+        return alQuitar();
+      }
+      let album = valor;
+      if (valor === "nuevo") {
+        const nombre = prompt("Nombre del álbum nuevo", sugerido);
+        if (!nombre) return;
+        album = (await api("POST", "/albumes", { nombre })).id;
+      }
+      const r = await api("PUT", `/albumes/${album}`, { agregar: ids });
+      aviso(ids.length > 1 ? `Listo: el álbum «${r.nombre}» tiene ${r.fotos} foto(s)` : `Agregada a «${r.nombre}»`);
+      cargarAlbumes().catch(() => {});
+    } catch (e) { aviso(e.message); }
+  };
+  return sel;
+}
+
 async function accionAlbum(fn) {
   try { await fn(); await cargar(); } catch (e) { aviso(e.message); }
 }
@@ -346,8 +374,14 @@ function pintar() {
          h("button", { className: "chip", textContent: "🖼️ Elegir portada", onclick: () => { estado.eligiendo = true; pintar(); } }),
          h("button", { className: "chip", textContent: "🔗 Unir con…", onclick: () => { estado.uniendo = true; pintar(); } }),
          h("button", { className: "chip", textContent: "✕ Ver todas", onclick: () => buscar("") })]));
-  } else {
-    eb.textContent = estado.q ? `${estado.fotos.length} foto(s) para “${estado.q}”` + (parecidas ? ` · ${parecidas} por parecido` : "") : "";
+  } else if (estado.q) {
+    eb.replaceChildren(`${estado.fotos.length} foto(s) para “${estado.q}”` + (parecidas ? ` · ${parecidas} por parecido` : ""));
+  }
+  // Lo que se buscó (o la persona) se puede meter entero a un álbum: así se arman álbumes "por lo que se ve"
+  const listas = estado.fotos.filter((f) => f.estado === "LISTA").map((f) => f.id);
+  if ((estado.q || estado.persona) && !estado.eligiendo && !estado.uniendo && listas.length) {
+    eb.append(selectorAlbum(h("select", { className: "chip selector" }), listas, `📚 Agregar estas ${listas.length} a…`,
+                            estado.q || nombrePersona(estado.persona)));
   }
 
   // Mientras alguna foto se esté revelando, refresca la galería cada 3 s
@@ -407,32 +441,8 @@ async function abrir(id) {
     finally { $("#d-caras").disabled = false; $("#d-caras").textContent = "🔄 Buscar caras"; }
   };
   // Agregar a un álbum (o quitar del que se está viendo); solo fotos listas
-  const sel = $("#d-album");
-  sel.classList.toggle("oculto", f.estado !== "LISTA");
-  sel.replaceChildren(h("option", { value: "", textContent: "📚 Álbum…" }),
-    ...(estado.album ? [h("option", { value: "quitar", textContent: `Quitar de «${estado.album.nombre}»` })] : []),
-    ...estado.albumes.filter((a) => a.id !== estado.album?.id).map((a) => h("option", { value: a.id, textContent: `Agregar a «${a.nombre}»` })),
-    h("option", { value: "nuevo", textContent: "Agregar a un álbum nuevo…" }));
-  sel.onchange = async () => {
-    const valor = sel.value;
-    sel.value = "";
-    try {
-      if (valor === "quitar") {
-        await api("PUT", `/albumes/${estado.album.id}`, { quitar: [id] });
-        $("#dialogo").close();
-        return cargar();
-      }
-      let album = valor;
-      if (valor === "nuevo") {
-        const nombre = prompt("Nombre del álbum nuevo");
-        if (!nombre) return;
-        album = (await api("POST", "/albumes", { nombre })).id;
-      }
-      await api("PUT", `/albumes/${album}`, { agregar: [id] });
-      aviso("Agregada al álbum");
-      cargarAlbumes().catch(() => {});
-    } catch (e) { aviso(e.message); }
-  };
+  $("#d-album").classList.toggle("oculto", f.estado !== "LISTA");
+  selectorAlbum($("#d-album"), [id], "📚 Álbum…", "", () => { $("#dialogo").close(); cargar(); });
   $("#d-borrar").onclick = async () => {
     if (!confirm("¿Borrar esta foto para siempre?")) return;
     try {
