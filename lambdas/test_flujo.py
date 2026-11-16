@@ -724,6 +724,8 @@ def test_asistente_combina_filtros(aws):
 
     buscar_fotos(personas=["Juliana"], lugar="Cartagena")
     assert "2 fotos" in crear_album(nombre="Cartagena con Juli")
+    assert "Ya existe el álbum «Cartagena con Juli»" in crear_album(nombre="Otra vez")
+    assert len(llamar("GET /albumes")[1]["albumes"]) == 1
     album = llamar("GET /albumes/{id}", foto=estado["album"]["id"])[1]
     assert album["nombre"] == "Cartagena con Juli" and {f["id"] for f in album["fotos"]} == {vieja, buena}
 
