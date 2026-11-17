@@ -1,7 +1,10 @@
 # Revela — galería de fotos inteligente en AWS
 
-Trabajo final de Computación en la Nube (2026-2). Nivel 1: cuentas con Cognito, subida directa a S3,
-análisis en paralelo con Step Functions (etiquetas, OCR, moderación, miniatura + EXIF) y búsqueda en DynamoDB.
+Trabajo final de Computación en la Nube (2026-2), de José y Juliana. Una galería de fotos tipo Google Fotos, sin
+servidores: cuentas con Cognito, subida directa a S3, análisis en paralelo con Step Functions (etiquetas, OCR,
+moderación, miniatura + EXIF), pie de foto con Nova, lugares con Amazon Location, búsqueda por significado con
+S3 Vectors, personas con Rekognition, álbumes compartidos por CloudFront, un asistente con Strands y recuerdos
+diarios por correo. Todo se crea y se destruye con Terraform.
 
 ```
 Navegador ──Cognito (login)──► API Gateway HTTP (JWT) ──► Lambda api ──► DynamoDB
@@ -237,7 +240,10 @@ Conclusiones:
   `publicas/` una copia re-codificada sin metadatos de hasta 2048 px. La llave privada RSA la genera Terraform (`tls_private_key`), va a SSM como SecureString y la
   API la lee al arrancar. También queda en el tfstate: el bucket es privado y cifrado, y la llave solo sirve para leer fotos.
   La firma usa `rsa` (puro Python) en la capa `firmas`, construida por `scripts/capa.sh` como la de Pillow.
-- Concurrencia de Lambda de la cuenta = 10 compartida: Step Functions reintenta con espera si se llena.
+- Concurrencia de Lambda de la cuenta = 10 compartida: Step Functions reintenta con espera si se llena, y la web
+  repite los 503/429 de la API (la Lambda estrangulada no se ejecutó, así que repetir no duplica nada). Con muchas
+  fotos a la vez, `SearchUsers` a veces no encuentra la cara recién indexada (`InvalidParameterException`):
+  `caras.py` reintenta tras 1, 2 y 4 s.
 - Cada foto se analiza una sola vez (paso `Reclamar`, escritura condicional en DynamoDB) y `procesar` copia a `fotos/`
   los bytes que leyó: Rekognition y la app usan esa copia, así que reusar la URL de subida no repite el gasto
   ni permite sobrescribir una foto ya moderada.
