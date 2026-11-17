@@ -93,8 +93,9 @@ usuario elige: Google retiró en 2025 el acceso a la biblioteca completa.
 1. La página pide un token de Google (Google Identity Services, permiso `photospicker.mediaitems.readonly`).
 2. Con ese token crea una sesión del selector, el usuario abre Google Fotos y elige, y la página espera a que la
    sesión diga `mediaItemsSet`.
-3. Por cada foto, `POST /importar {token, url, nombre}`. La API la descarga (`baseUrl=d`) y la deja en `originales/`
-   con el mismo cupo y el mismo análisis de una subida normal. La descarga no la puede hacer el navegador porque
+3. Por cada foto, `POST /importar {token, url, nombre, fecha}`. La API la descarga (`baseUrl=d`) y la deja en `originales/`
+   con el mismo cupo y el mismo análisis de una subida normal. `fecha` es el `createTime` de Google: se usa si el
+   archivo no trae fecha EXIF (fotos de WhatsApp). La descarga no la puede hacer el navegador porque
    Google no permite CORS con `Authorization` en `lh3.googleusercontent.com`.
 4. Al final la página borra la sesión.
 
@@ -208,6 +209,7 @@ Conclusiones:
   Las fotos en cuarentena no se le envían.
 - Lugares: el GPS sale del EXIF; Android e iOS lo borran al compartir desde el celular, así que la página manda la
   ubicación del navegador al subir (casilla "Mi ubicación") y la foto queda marcada como "ubicación al subir".
+  Solo se usa si la foto es de los últimos 2 días o no trae fecha: una foto vieja no se tomó donde estás hoy.
   Amazon Location pone el nombre (ciudad, departamento, país) con `IntendedUse=Storage` porque se guarda, y se puede
   buscar por él. La API key del mapa va en un stack de CloudFormation (el provider no tiene recurso para keys v2)
   y solo sirve para mosaicos desde el dominio de la web.

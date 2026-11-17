@@ -929,9 +929,11 @@ async function importarGoogle() {
       pagina = r.nextPageToken;
     } while (pagina);
     dlg.close();
-    const fotos = items.filter((i) => i.type === "PHOTO").map((i) => i.mediaFile);
+    const fotos = items.filter((i) => i.type === "PHOTO");
     if (items.length > fotos.length) aviso("Los videos no se importan");
-    await colaDeSubida(fotos.map((f) => f.filename), (n) => api("POST", "/importar", { token, url: fotos[n].baseUrl, nombre: fotos[n].filename }));
+    // createTime: fecha de la foto según Google, por si el archivo no trae EXIF (WhatsApp)
+    await colaDeSubida(fotos.map((f) => f.mediaFile.filename), (n) => api("POST", "/importar",
+      { token, url: fotos[n].mediaFile.baseUrl, nombre: fotos[n].mediaFile.filename, fecha: fotos[n].createTime }));
   } catch (e) {
     dlg.close();
     if (e.message !== "sesión cerrada") aviso(e.message);

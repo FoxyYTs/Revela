@@ -2,6 +2,7 @@
 Rekognition no se simula: se pasan respuestas con la forma que entrega Step Functions."""
 import io
 import json
+from datetime import datetime, timedelta
 
 import botocore.response
 
@@ -19,12 +20,13 @@ USUARIO = "1111-aaaa"
 PERRO = [{"Name": "Dog", "Confidence": 99.1}, {"Name": "Beach", "Confidence": 91.0}]
 
 
-def jpeg(ancho=1200, alto=800, gps=True):
+def jpeg(ancho=1200, alto=800, gps=True, fecha="2025:12:24 20:15:00"):
     exif = Image.Exif()
     exif[ExifTags.Base.Make] = "Google"
     exif[ExifTags.Base.Model] = "Pixel 8"
     exif[ExifTags.Base.Orientation] = 6  # rotada 90°: la miniatura debe quedar vertical
-    exif.get_ifd(ExifTags.IFD.Exif)[ExifTags.Base.DateTimeOriginal] = "2025:12:24 20:15:00"
+    if fecha:
+        exif.get_ifd(ExifTags.IFD.Exif)[ExifTags.Base.DateTimeOriginal] = fecha
     if gps:
         exif.get_ifd(ExifTags.IFD.GPSInfo).update({
             ExifTags.GPS.GPSLatitudeRef: "N", ExifTags.GPS.GPSLatitude: (6.0, 15.0, 3.6),
@@ -321,10 +323,18 @@ def test_lugar_por_gps_de_la_foto(aws, traductor, location):
 
 def test_ubicacion_del_navegador_si_la_foto_no_trae(aws, traductor, location):
     location.add_response("reverse_geocode", RIONEGRO)
-    foto, _ = subir_y_analizar(traductor, imagen=jpeg(gps=False), ubicacion={"lat": 6.1446961, "lon": -75.3716})
+    ayer = (datetime.now() - timedelta(days=1)).strftime("%Y:%m:%d %H:%M:%S")
+    foto, _ = subir_y_analizar(traductor, imagen=jpeg(gps=False, fecha=ayer), ubicacion={"lat": 6.1446961, "lon": -75.3716})
     det = llamar("GET /fotos/{id}", foto=foto)[1]
     assert det["gps"] == {"lat": 6.144696, "lon": -75.3716} and det["gps_fuente"] == "subida"
     assert llamar("GET /lugares")[1]["fotos"][0]["aproximada"] is True
+
+    # Sin fecha no se sabe si es vieja: se usa; una foto de hace un año no se tomó donde estás hoy
+    location.add_response("reverse_geocode", RIONEGRO)
+    sin_fecha, _ = subir_y_analizar(traductor, imagen=jpeg(gps=False, fecha=None), ubicacion={"lat": 6.14, "lon": -75.37})
+    vieja, _ = subir_y_analizar(traductor, imagen=jpeg(gps=False), ubicacion={"lat": 6.14, "lon": -75.37})
+    assert llamar("GET /fotos/{id}", foto=sin_fecha)[1]["gps_fuente"] == "subida"
+    assert llamar("GET /fotos/{id}", foto=vieja)[1]["gps"] is None
 
 
 def test_sin_ubicacion_o_location_falla(aws, traductor, location):
@@ -856,7 +866,7 @@ def test_colecciones_de_recuerdos(aws):
     assert "aniversario" in {c["id"] for c in api.colecciones(USUARIO, datetime(2027, 3, 8))}
 
 
-def test_importar_de_google_fotos(aws, monkeypatch):
+def test_importar_de_google_fotos(aws, traductor, monkeypatch):
     import urllib.error
     pedidos = []
 
@@ -873,16 +883,26 @@ def test_importar_de_google_fotos(aws, monkeypatch):
         pedidos.append(pedido)
         if "/redirige" in pedido.full_url:
             raise urllib.error.HTTPError(pedido.full_url, 302, "Found", {}, None)
-        return Respuesta(jpeg(gps=False), "image/heif" if "/heic" in pedido.full_url else "image/jpeg")
+        return Respuesta(jpeg(gps=False, fecha=None), "image/heif" if "/heic" in pedido.full_url else "image/jpeg")
     monkeypatch.setattr(api._descargador, "open", abrir)
 
     base = "https://lh3.googleusercontent.com/ppa/AbC-123_x"
-    status, r = llamar("POST /importar", {"token": "ya29.token", "url": base, "nombre": "PXL_2024.jpg"})
+    status, r = llamar("POST /importar", {"token": "ya29.token", "url": base, "nombre": "PXL_2024.jpg", "fecha": "2019-07-20T18:30:00.5Z"})
     assert status == 201
     assert pedidos[0].full_url == base + "=d" and pedidos[0].get_header("Authorization") == "Bearer ya29.token"
     item = api.tabla.get_item(Key={"PK": f"U#{USUARIO}", "SK": f"F#{r['foto']}"})["Item"]
     assert item["estado"] == "PROCESANDO" and item["nombre"] == "PXL_2024.jpg" and "gps_subida" not in item
     assert boto3.client("s3").head_object(Bucket="revela-test", Key=item["original"])["ContentType"] == "image/jpeg"
+
+    # El archivo no trae fecha EXIF: queda la de Google, en hora de Colombia
+    assert item["fecha_respaldo"] == "2019-07-20T13:30:00"
+    traductor.add_response("converse", respuesta_nova(nova(["Perro", "Playa"])))
+    traductor.add_response("invoke_model", respuesta_vector())
+    imagen = procesar.lambda_handler({"bucket": "revela-test", "key": item["original"]}, None)
+    guardar.lambda_handler({"bucket": "revela-test", "key": imagen["revisada"], "etiquetas": PERRO, "imagen": imagen}, None)
+    assert llamar("GET /fotos/{id}", foto=r["foto"])[1]["fecha_toma"] == "2019-07-20T13:30:00"
+    for fecha in ("ayer", "2019-07-20T18:30:00", 5):  # ilegible o sin zona horaria: se ignora
+        assert api.leer_fecha(fecha) is None
 
     # El token de Google nunca va a otro host, ni siguiendo una redirección
     for url in ("https://evil.test/x", "https://lh3.googleusercontent.com.evil.test/x", base + "?x=1", None):

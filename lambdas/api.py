@@ -175,7 +175,16 @@ def descontar_cupo(usuario, contador="subidas", tope=None, mensaje=None):
         raise ErrorCliente(429, mensaje or f"Llegaste al límite de {SUBIDAS_DIA} fotos por día; mañana puedes subir más") from None
 
 
-def nueva_foto(usuario, nombre, tipo, ubicacion=None):
+def leer_fecha(valor):
+    """createTime de Google Fotos (RFC 3339) a hora de Colombia, como la fecha EXIF; si no se entiende, se ignora."""
+    try:
+        fecha = datetime.fromisoformat(valor)
+    except (TypeError, ValueError):
+        return None
+    return fecha.astimezone(COLOMBIA).strftime("%Y-%m-%dT%H:%M:%S") if fecha.tzinfo else None
+
+
+def nueva_foto(usuario, nombre, tipo, ubicacion=None, fecha=None):
     """Registra la foto en PROCESANDO y devuelve (id, key en originales/); el análisis arranca cuando llega a S3."""
     descontar_cupo(usuario)
     foto = uuid.uuid4().hex
@@ -190,6 +199,8 @@ def nueva_foto(usuario, nombre, tipo, ubicacion=None):
     }
     if ubicacion:
         item["gps_subida"] = ubicacion
+    if fecha:
+        item["fecha_respaldo"] = fecha  # guardar la usa si la foto no trae fecha EXIF
     tabla.put_item(Item=item)
     return foto, key
 
@@ -236,7 +247,7 @@ def importar(usuario, cuerpo):
         raise ErrorCliente(415, "Solo se importan fotos JPG o PNG")
     if len(datos) > MAX_BYTES:
         raise ErrorCliente(413, "La foto pesa más de 15 MB")
-    foto, key = nueva_foto(usuario, cuerpo.get("nombre"), tipo)
+    foto, key = nueva_foto(usuario, cuerpo.get("nombre"), tipo, fecha=leer_fecha(cuerpo.get("fecha")))
     s3.put_object(Bucket=BUCKET, Key=key, Body=datos, ContentType=tipo)
     return 201, {"foto": foto}
 

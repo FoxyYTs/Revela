@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import unicodedata
+from datetime import datetime, timedelta
 from decimal import Decimal
 
 import boto3
@@ -33,6 +34,7 @@ UMBRAL_MODERACION = float(os.environ.get("UMBRAL_MODERACION", "80"))
 # Categorías de primer nivel de Rekognition que mandan la foto a cuarentena (traje de baño, alcohol, etc. no)
 BLOQUEAR = {"Explicit", "Non-Explicit Nudity of Intimate parts and Kissing", "Violence", "Visually Disturbing", "Hate Symbols"}
 MAX_PALABRAS = 30
+RECIENTE = timedelta(days=2)  # hasta cuándo la ubicación del navegador vale para la foto que se sube
 
 MODELO = os.environ.get("MODELO", "us.amazon.nova-lite-v1:0")
 INSTRUCCION = (
@@ -184,15 +186,20 @@ def lambda_handler(event, _context):
         if tabla.get_item(Key={"PK": pk, "SK": "PERFIL"}).get("Item", {}).get("personas"):
             personas, caras = rostros.reconocer(usuario, foto, event["bucket"], imagen["revisada"])
 
-    # GPS de la foto; si el celular lo borró, la ubicación que dio el navegador al subir
+    # Fecha de la cámara; sin EXIF (WhatsApp, capturas), la que dio Google Fotos al importar
+    fecha_toma = imagen.get("fecha_toma") or actual.get("fecha_respaldo")
+
+    # GPS de la foto; si el celular lo borró, la ubicación que dio el navegador al subir, pero solo si la foto es
+    # reciente: una foto vieja no se tomó donde estás hoy. Sin fecha no se sabe y se usa igual
     gps = imagen.get("gps")
     fuente = "foto" if gps else None
-    if not gps and actual.get("gps_subida"):
+    if not gps and actual.get("gps_subida") and (
+            not fecha_toma or datetime.fromisoformat(actual["fecha_subida"]) - datetime.fromisoformat(fecha_toma) <= RECIENTE):
         gps, fuente = {k: float(v) for k, v in actual["gps_subida"].items()}, "subida"
     lugar = geocodificar(gps) if gps and estado == "LISTA" else None
 
-    # Orden de la galería: fecha de toma si la cámara la guardó, si no la de subida
-    fecha_orden = f"{imagen.get('fecha_toma') or actual['fecha_subida']}#{foto}"
+    # Orden de la galería: fecha de toma si se conoce, si no la de subida
+    fecha_orden = f"{fecha_toma or actual['fecha_subida']}#{foto}"
 
     claves = {}
     if estado == "LISTA":
@@ -222,7 +229,7 @@ def lambda_handler(event, _context):
                           "texto = :tx, descripcion = :de, moderacion = :mo, ancho = :an, alto = :al, camara = :ca, gps = :gp, gps_fuente = :gf, lugar = :lu, "
                           "miniatura = :mi, revisada = :rv, publica = :pu, claves = :cl, personas = :pe, caras = :cr REMOVE expira"),
         ExpressionAttributeValues={
-            ":e": estado, ":fo": fecha_orden, ":ft": imagen.get("fecha_toma"),
+            ":e": estado, ":fo": fecha_orden, ":ft": fecha_toma,
             ":et": nombres_es, ":en": nombres_en, ":tx": "\n".join(textos), ":de": descripcion, ":mo": bloqueo,
             ":an": imagen["ancho"], ":al": imagen["alto"], ":ca": imagen.get("camara"),
             ":gp": {k: Decimal(str(v)) for k, v in gps.items()} if gps else None, ":gf": fuente, ":lu": lugar,
