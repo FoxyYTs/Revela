@@ -795,9 +795,10 @@ def test_recuerdos(aws, llave_cdn, monkeypatch):
     enviados = []
     monkeypatch.setattr(recuerdos.ses, "send_email", lambda **k: enviados.append(k))
 
-    r = recuerdos.lambda_handler({"fecha": "2026-12-05"}, None)
+    llamar("PUT /albumes/{id}", {"agregar": [hace_un_anio, hace_tres]}, foto=llamar("POST /albumes", {"nombre": "Diciembre"})[1]["id"])
+    r = recuerdos.lambda_handler({"fecha": "2026-12-05"}, None)  # otro álbum con las mismas fotos no cuenta como el de recuerdos
     assert r == {"fecha": "2026-12-05", "usuarios": 2, "albumes": 1, "correos": 1}
-    album = llamar("GET /albumes")[1]["albumes"][0]
+    album = next(a for a in llamar("GET /albumes")[1]["albumes"] if a["nombre"] != "Diciembre")
     assert album["nombre"] == "Recuerdos del 5 de diciembre" and album["fotos"] == 2
     asunto = enviados[0]["Message"]["Subject"]["Data"]
     assert asunto == "Hace 1 año y 3 años: 2 fotos del 5 de diciembre" and enviados[0]["Destination"]["ToAddresses"] == ["persona@correo.test"]
@@ -805,7 +806,7 @@ def test_recuerdos(aws, llave_cdn, monkeypatch):
 
     # Si vuelve a correr el mismo día no repite el álbum (el correo sí sale)
     assert recuerdos.lambda_handler({"fecha": "2026-12-05"}, None)["albumes"] == 0
-    assert len(llamar("GET /albumes")[1]["albumes"]) == 1
+    assert len(llamar("GET /albumes")[1]["albumes"]) == 2
     assert recuerdos.lambda_handler({"fecha": "2026-03-01"}, None)["correos"] == 0  # día sin recuerdos
 
     assert llamar("DELETE /recuerdos")[1] == {"activo": False}

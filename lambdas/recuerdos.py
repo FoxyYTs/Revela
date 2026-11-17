@@ -79,13 +79,11 @@ def lambda_handler(event, _context):
         if not fotos:
             continue
         ids = [f["SK"][2:] for f in fotos][:api.MAX_ALBUM]
-        album = api.album_igual(usuario, ids)  # si ya corrió hoy, no lo repite
-        if album:
-            nombre = album["nombre"]
-        else:
-            _, nuevo = api.crear_album(usuario, {"nombre": f"Recuerdos del {hoy.day} de {MESES[hoy.month - 1]}"})
+        nombre = f"Recuerdos del {hoy.day} de {MESES[hoy.month - 1]}"
+        # Si ya corrió hoy no lo repite; con el nombre, porque otro álbum del usuario puede tener las mismas fotos
+        if not api.album_igual(usuario, ids, nombre):
+            _, nuevo = api.crear_album(usuario, {"nombre": nombre})
             api.editar_album(usuario, nuevo["id"], {"agregar": ids})
-            nombre = nuevo["nombre"]
             resumen["albumes"] += 1
         try:
             destino = correo_de(usuario)

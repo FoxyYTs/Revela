@@ -393,9 +393,10 @@ def desactivar_recuerdos(usuario):
     return 200, {"activo": False}
 
 
-def album_igual(usuario, fotos):
-    """El álbum que ya tiene exactamente esas fotos, para no crear uno repetido."""
-    return next((i for i in consultar(f"U#{usuario}", "ALBUM#") if set(i.get("fotos", [])) == set(fotos)), None)
+def album_igual(usuario, fotos, nombre=None):
+    """El álbum que ya tiene exactamente esas fotos (y ese nombre, si se da), para no crear uno repetido."""
+    return next((i for i in consultar(f"U#{usuario}", "ALBUM#")
+                 if set(i.get("fotos", [])) == set(fotos) and nombre in (None, i["nombre"])), None)
 
 
 def editar_persona(usuario, persona, cuerpo):
