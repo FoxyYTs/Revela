@@ -161,6 +161,46 @@ aws lambda invoke --function-name jyj-revela-recuerdos --cli-binary-format raw-i
   y se lee al instante, con un cobro pequeño por GB leído. Miniaturas y `publicas/` se quedan en Standard. "Buscar caras"
   lee `publicas/` para no tocar el archivo de Glacier. Las subidas multiparte abandonadas se borran al día.
 
+## Costos por cada mil fotos
+
+Precios on-demand de us-east-1 sacados de la AWS Price List API (17/11/2026), sin capa gratuita (la cuenta es
+compartida). Los consumos son medidos en las 50 fotos de prueba: `procesar` 0,81 s a 1024 MB, `guardar` 2,3 s a 256 MB,
+Nova Lite 1730 tokens de entrada y 65 de salida por foto, y en S3 2,2 MB el archivo, 32 KB la miniatura y 340 KB la
+copia pública.
+
+**Analizar 1000 fotos (una sola vez):**
+
+| Parte | Cálculo | USD |
+|---|---|---|
+| Rekognition | 3 llamadas (etiquetas, texto, moderación) × USD 1 por mil | 3,00 |
+| Amazon Location | nombre del lugar guardado (`IntendedUse=Storage`): USD 4 por mil, solo fotos con GPS | hasta 4,00 |
+| Bedrock, Nova Lite | 1,73 M tokens × USD 0,06/M + 65 mil × USD 0,24/M | 0,12 |
+| Bedrock, embeddings | USD 0,06 por mil imágenes | 0,06 |
+| Step Functions (Standard) | ~9 transiciones × USD 0,025 por mil | 0,23 |
+| Lambda | 1,38 GB-s por foto × USD 0,0000167 | 0,02 |
+| S3, DynamoDB, S3 Vectors, SQS, Pipes | ~4 PUT y ~5 GET en S3, ~30 escrituras en la tabla, un PUT de vector | 0,09 |
+| **Total** | | **≈ 3,50 sin GPS, ≈ 7,50 con GPS** |
+
+Personas (opt-in) suma `IndexFaces` por foto y `SearchUsers` + `AssociateFaces` por cara (`CreateUser` si es alguien
+nuevo): con 2 caras por foto, unos USD 5 más por cada mil fotos.
+
+**Guardar 1000 fotos al mes:** 2,2 GB de archivos a USD 0,023/GB el primer mes y USD 0,004/GB desde el día 30
+(Glacier IR), más 0,37 GB de miniaturas y copias públicas en Standard. Son ≈ USD 0,06 el primer mes y ≈ USD 0,02 después.
+DynamoDB (≈ 6,5 KB por foto), los vectores (4 KB) y las caras guardadas no llegan a un centavo.
+
+**Usarla:** cada pedido a la API cuesta USD 1 por millón (más la Lambda, ~0,15 s a 256 MB); los mosaicos del mapa,
+USD 0,04 por mil; una pregunta al asistente, ≈ USD 0,004 (Nova 2 Lite: medido ~10 mil tokens de entrada en ~6 llamadas
+al modelo por pregunta); un correo de recuerdos, USD 0,0001. Fijos al mes: 3 alarmas a USD 0,10 y el tablero
+(USD 3 si la cuenta ya usa sus 3 gratis). Cognito, Scheduler, SNS y CloudFront quedan en su capa gratuita.
+
+Conclusiones:
+- La IA por llamada es casi todo el costo. Lo más caro es guardar el nombre del lugar, por encima de Rekognition. Se
+  podría reutilizar el nombre de una foto anterior del mismo usuario con coordenadas cercanas.
+- Lambda, Step Functions y el almacenamiento son centavos: el diseño serverless no cobra cuando nadie sube fotos.
+- El cupo de 50 fotos al día pone un techo de ≈ USD 0,38 por usuario al día con GPS, o ≈ USD 0,63 con personas activadas.
+- Cost Explorer con la etiqueta `Proyecto=revela` muestra USD 0,014 en noviembre (S3, DynamoDB, API). No incluye
+  Rekognition, Bedrock ni el geocodificado, que cobran por llamada sin etiqueta.
+
 ## Notas
 
 - Nova Lite mira la miniatura (480 px) y en una sola llamada escribe el pie de foto y traduce las etiquetas
