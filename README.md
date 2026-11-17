@@ -23,11 +23,17 @@ Web: S3 privado ◄── CloudFront + OAC          Mapa: MapLibre + mosaicos de
      ✦ Preguntar ──► POST /asistente ──► Lambda asistente (Strands + Nova 2 Lite) ──► herramientas sobre api.py
 ```
 
+Diagrama completo: [`docs/arquitectura-revela.drawio`](docs/arquitectura-revela.drawio) (se abre en app.diagrams.net) y su
+imagen:
+
+![Arquitectura de Revela](docs/arquitectura-revela.png)
+
 | Carpeta | Contenido |
 |---|---|
 | `lambdas/` | `api.py`, `asistente.py`, `recuerdos.py`, `procesar.py`, `guardar.py`, `caras.py` y `test_flujo.py` (moto) |
 | `web/` | `index.html` + `app.js`, sin build; la configuración llega en `config.js` (la escribe Terraform) |
 | `infra/` | Terraform: módulos `auth`, `datos`, `pipeline`, `api`, `web`, `operacion` (109 recursos) |
+| `docs/` | Diagrama de arquitectura en draw.io y PNG |
 | `scripts/capa.sh` | Construye las capas (Pillow, rsa, Strands); Terraform la llama sola |
 
 ## Pruebas
