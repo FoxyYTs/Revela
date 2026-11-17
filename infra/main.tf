@@ -38,28 +38,29 @@ module "pipeline" {
 }
 
 module "api" {
-  source       = "./modules/api"
-  prefijo      = local.prefijo
-  bucket       = module.datos.bucket
-  bucket_arn   = module.datos.bucket_arn
-  tabla        = module.datos.tabla
-  tabla_arn    = module.datos.tabla_arn
-  vectores     = module.datos.vectores
-  indice_arn   = module.datos.indice_arn
-  zip          = data.archive_file.lambdas.output_path
-  zip_hash     = data.archive_file.lambdas.output_base64sha256
-  issuer       = module.auth.issuer
-  client_id    = module.auth.client_id
-  origenes     = local.origenes
-  mapa_key     = module.web.mapa_key
-  mapa_key_arn = module.web.mapa_key_arn
-  cdn          = module.web.dominio
-  firma_id     = module.web.firma_id
-  llave        = module.web.llave
-  llave_arn    = module.web.llave_arn
-  script_capa  = "${path.module}/../scripts/capa.sh"
-  correo       = var.correo_alertas
-  pool_id      = module.auth.user_pool_id
+  source         = "./modules/api"
+  prefijo        = local.prefijo
+  bucket         = module.datos.bucket
+  bucket_arn     = module.datos.bucket_arn
+  tabla          = module.datos.tabla
+  tabla_arn      = module.datos.tabla_arn
+  vectores       = module.datos.vectores
+  indice_arn     = module.datos.indice_arn
+  zip            = data.archive_file.lambdas.output_path
+  zip_hash       = data.archive_file.lambdas.output_base64sha256
+  issuer         = module.auth.issuer
+  client_id      = module.auth.client_id
+  origenes       = local.origenes
+  mapa_key       = module.web.mapa_key
+  mapa_key_arn   = module.web.mapa_key_arn
+  cdn            = module.web.dominio
+  firma_id       = module.web.firma_id
+  llave          = module.web.llave
+  llave_arn      = module.web.llave_arn
+  script_capa    = "${path.module}/../scripts/capa.sh"
+  correo         = var.correo_alertas
+  correos_prueba = var.correos_prueba
+  pool_id        = module.auth.user_pool_id
 }
 
 variable "correo_alertas" {
@@ -69,6 +70,12 @@ variable "correo_alertas" {
     condition     = can(regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$", var.correo_alertas))
     error_message = "correo_alertas debe ser un correo."
   }
+}
+
+variable "correos_prueba" {
+  description = "Cuentas de Revela que recibirán recuerdos mientras SES esté en sandbox; van en terraform.tfvars"
+  type        = list(string)
+  default     = []
 }
 
 module "operacion" {

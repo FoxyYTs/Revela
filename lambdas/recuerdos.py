@@ -10,6 +10,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 import boto3
+from botocore.exceptions import ClientError
 from boto3.dynamodb.conditions import Key
 
 import api
@@ -91,7 +92,7 @@ def lambda_handler(event, _context):
             if destino:
                 enviar(destino, hoy, fotos, nombre)
                 resumen["correos"] += 1
-        except ses.exceptions.MessageRejected as e:  # sandbox: el destinatario no está verificado
-            log.warning("SES rechazó un correo (%s); en sandbox el destinatario debe estar verificado", e.response["Error"]["Code"])  # el mensaje trae el correo
+        except ClientError as e:  # sandbox: destinatario sin verificar (MessageRejected o AccessDenied); sigue con los demás
+            log.warning("No se pudo enviar un recuerdo (%s); en sandbox el destinatario debe estar verificado", e.response["Error"]["Code"])  # el mensaje trae el correo
     log.info("Recuerdos: %s", resumen)
     return resumen

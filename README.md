@@ -91,7 +91,10 @@ suscrito:
 
 **SES está en sandbox:** solo entrega a correos verificados, hasta 200 al día. El `apply` crea la identidad de
 `correo_alertas`, y AWS manda un correo de verificación que hay que confirmar. Ese correo funciona como remitente y
-como destinatario. A los demás usuarios se les arma el álbum igual, y el rechazo de SES queda en el log.
+como destinatario. Para que le llegue a otra cuenta de Revela, su correo va en `correos_prueba = [...]` de
+`terraform.tfvars`: el apply la registra en SES, le manda su propio correo de verificación y le da permiso a la Lambda
+(en sandbox, SES autoriza también contra la identidad del destinatario). A los demás usuarios se les arma el álbum igual,
+y el rechazo de SES queda en el log.
 
 Para probar con otra fecha (por ejemplo, el día de la exposición):
 ```

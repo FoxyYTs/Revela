@@ -80,6 +80,11 @@ variable "correo" {
   type        = string
 }
 
+variable "correos_prueba" {
+  description = "Correos que pueden recibir recuerdos mientras SES esté en sandbox (cada uno recibe un correo de verificación)"
+  type        = list(string)
+}
+
 variable "pool_id" {
   type = string
 }
@@ -350,6 +355,11 @@ resource "aws_ses_email_identity" "remitente" {
   email = var.correo
 }
 
+resource "aws_ses_email_identity" "prueba" {
+  for_each = toset(var.correos_prueba)
+  email    = each.value
+}
+
 resource "aws_iam_role" "recuerdos" {
   name               = "${var.prefijo}-recuerdos-role"
   assume_role_policy = data.aws_iam_policy_document.assume_lambda.json
@@ -373,7 +383,8 @@ resource "aws_iam_role_policy" "recuerdos" {
     Statement = [
       { Effect = "Allow", Action = ["dynamodb:Query", "dynamodb:GetItem", "dynamodb:PutItem", "dynamodb:UpdateItem", "dynamodb:BatchGetItem"], Resource = [var.tabla_arn, "${var.tabla_arn}/index/por-fecha"] },
       { Effect = "Allow", Action = "ssm:GetParameter", Resource = var.llave_arn },
-      { Effect = "Allow", Action = "ses:SendEmail", Resource = aws_ses_email_identity.remitente.arn },
+      # En sandbox SES también autoriza contra la identidad de cada destinatario, no solo la del remitente
+      { Effect = "Allow", Action = "ses:SendEmail", Resource = concat([aws_ses_email_identity.remitente.arn], [for i in aws_ses_email_identity.prueba : i.arn]) },
       { Effect = "Allow", Action = "cognito-idp:ListUsers", Resource = "arn:aws:cognito-idp:us-east-1:${data.aws_caller_identity.actual.account_id}:userpool/${var.pool_id}" },
     ]
   })
