@@ -712,9 +712,12 @@ function pintarRecuerdos() {
     return;
   }
   caja.dataset.pintado = JSON.stringify(lista.map((c) => c.id + c.titulo));
+  // Cada tarjeta con una portada distinta: varias colecciones suelen empezar por la misma foto reciente
+  const usadas = new Set();
+  const portada = (c) => { const f = c.fotos.find((x) => !usadas.has(x.id)) || c.fotos[0]; usadas.add(f.id); return f; };
   const carrusel = h("div", { className: "carrusel" }, ...lista.map((c) =>
     h("button", { className: "recuerdo", onclick: () => verRecuerdos(c), ariaLabel: `${c.titulo}, ${c.subtitulo}` },
-      h("img", { src: c.fotos[0].miniatura, alt: "", loading: "lazy" }), h("span", {}, c.titulo, h("small", { textContent: c.subtitulo })))));
+      h("img", { src: portada(c).miniatura, alt: "", loading: "lazy" }), h("span", {}, c.titulo, h("small", { textContent: c.subtitulo })))));
   const flecha = (lado, d) => {
     const b = h("button", { className: `flecha ${lado}`, ariaLabel: lado === "der" ? "Más recuerdos" : "Recuerdos anteriores",
                             onclick: () => carrusel.scrollBy({ left: d * carrusel.clientWidth * 0.8, behavior: "smooth" }) });
