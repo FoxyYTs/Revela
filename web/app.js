@@ -685,34 +685,52 @@ casilla.onchange = () => { try { localStorage.setItem("revela.ubicacion", casill
 
 // La preferencia vive en el servidor: la Lambda diaria solo escribe a quien la activó
 const recuerdos = $("#recibir-recuerdos");
-// Los recuerdos del día salen arriba de la galería; ?recuerdos=AAAA-MM-DD (el enlace del correo) los abre de una vez
-// y sirve para simular otro día en la demo
+// Las colecciones de recuerdos del día salen en un carrusel arriba de la galería. ?recuerdos=AAAA-MM-DD (el enlace del
+// correo) abre los de esa fecha de una vez y sirve para simular otro día en la demo
 async function cargarRecuerdos() {
   const fecha = new URLSearchParams(location.search).get("recuerdos");
   const r = await api("GET", "/recuerdos" + (fecha ? `?fecha=${encodeURIComponent(fecha)}` : ""));
   recuerdos.checked = r.activo;
-  estado.recuerdos = r.fotos.length ? r : null;
-  if (fecha && estado.recuerdos) verRecuerdos();
+  estado.recuerdos = r.recuerdos;
+  if (fecha && r.recuerdos.length) verRecuerdos(r.recuerdos[0]);  // "Hace N años" va primero cuando existe
   else pintar();
 }
 
-function verRecuerdos() {
-  const [hace, detalle] = estado.recuerdos.titulo.split(": ");
-  Object.assign(estado, { q: hace, respuesta: detalle[0].toUpperCase() + detalle.slice(1), persona: null, album: null, charla: null,
-                          eligiendo: false, uniendo: false, siguiente: null, fotos: estado.recuerdos.fotos });
+function verRecuerdos(c) {
+  Object.assign(estado, { q: c.titulo, respuesta: c.subtitulo, persona: null, album: null, charla: null,
+                          eligiendo: false, uniendo: false, siguiente: null, fotos: c.fotos });
   $("#q").value = "";
   vista("fotos");
   pintar();
 }
 
 function pintarRecuerdos() {
-  const r = estado.recuerdos, caja = $("#recuerdos");
-  caja.classList.toggle("oculto", !r || !!(estado.q || estado.persona || estado.album));
-  if (!r) return caja.replaceChildren();
-  const [hace, detalle] = r.titulo.split(": ");
-  caja.replaceChildren(h("button", { className: "recuerdo", onclick: verRecuerdos, ariaLabel: r.titulo },
-    h("img", { src: r.fotos[0].miniatura, alt: "" }), h("span", {}, hace, h("small", { textContent: detalle }))));
+  const lista = estado.recuerdos || [], caja = $("#recuerdos");
+  caja.classList.toggle("oculto", !lista.length || !!(estado.q || estado.persona || estado.album));
+  if (caja.dataset.pintado === JSON.stringify(lista.map((c) => c.id + c.titulo))) {  // no recargar las portadas en cada pintar()
+    if (caja.flechas) requestAnimationFrame(caja.flechas);  // si estaba oculto, el ancho recién se puede medir ahora
+    return;
+  }
+  caja.dataset.pintado = JSON.stringify(lista.map((c) => c.id + c.titulo));
+  const carrusel = h("div", { className: "carrusel" }, ...lista.map((c) =>
+    h("button", { className: "recuerdo", onclick: () => verRecuerdos(c), ariaLabel: `${c.titulo}, ${c.subtitulo}` },
+      h("img", { src: c.fotos[0].miniatura, alt: "", loading: "lazy" }), h("span", {}, c.titulo, h("small", { textContent: c.subtitulo })))));
+  const flecha = (lado, d) => {
+    const b = h("button", { className: `flecha ${lado}`, ariaLabel: lado === "der" ? "Más recuerdos" : "Recuerdos anteriores",
+                            onclick: () => carrusel.scrollBy({ left: d * carrusel.clientWidth * 0.8, behavior: "smooth" }) });
+    b.innerHTML = svg(lado === "der" ? "m9 6 6 6-6 6" : "m15 6-6 6 6 6");
+    return b;
+  };
+  const izq = flecha("izq", -1), der = flecha("der", 1);
+  const flechas = () => {
+    izq.hidden = carrusel.scrollLeft < 4;
+    der.hidden = carrusel.scrollLeft + carrusel.clientWidth >= carrusel.scrollWidth - 4;
+  };
+  carrusel.onscroll = caja.flechas = flechas;
+  caja.replaceChildren(carrusel, izq, der);
+  requestAnimationFrame(flechas);
 }
+
 recuerdos.onchange = async () => {
   try {
     recuerdos.checked = (await api(recuerdos.checked ? "PUT" : "DELETE", "/recuerdos")).activo;

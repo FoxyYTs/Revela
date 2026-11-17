@@ -18,14 +18,16 @@ GET    /albumes       → álbumes del usuario;  POST /albumes {nombre} → crea
 GET    /albumes/{id}  → el álbum con sus fotos;  PUT {nombre?, agregar?, quitar?};  DELETE lo borra (y su enlace)
 POST   /albumes/{id}/enlace {dias} → enlace para verlo sin cuenta;  DELETE lo revoca
 GET    /compartidos/{token} (pública) → el álbum compartido con URLs de CloudFront firmadas por una hora
-GET    /recuerdos     → si recibe recuerdos por correo y las fotos de este día en años anteriores (?fecha=AAAA-MM-DD
-                        para simular otro día);  PUT activa el correo;  DELETE lo apaga
+GET    /recuerdos     → si recibe recuerdos por correo y las colecciones del día: hace N años, un día reciente, un día
+                        viejo, una persona, un lugar y un tema (?fecha=AAAA-MM-DD simula otro día);  PUT activa el
+                        correo;  DELETE lo apaga
 POST   /asistente     → lo atiende otra Lambda (asistente.py): agente de Strands que combina estas búsquedas
 """
 import base64
 import json
 import logging
 import os
+import random
 import re
 import secrets
 import unicodedata
@@ -403,6 +405,82 @@ def titulo_recuerdos(hoy, fotos):
     return f"Hace {hace}: {len(fotos)} foto{'s' if len(fotos) > 1 else ''} del {hoy.day} de {MESES[hoy.month - 1]}"
 
 
+DIAS = ["lunes", "martes", "miércoles", "jueves", "viernes", "sábado", "domingo"]
+# Etiquetas de Rekognition (ya traducidas y normalizadas) que dan para una colección temática
+TEMAS = {"autofoto": "Selfies", "selfie": "Selfies", "comida": "Para comer", "alimento": "Para comer", "perro": "Perros",
+         "gato": "Gatos", "mascota": "Mascotas", "playa": "Días de playa", "montana": "Montañas", "atardecer": "Atardeceres",
+         "naturaleza": "Naturaleza", "fiesta": "Celebraciones", "sonrisa": "Sonrisas", "nieve": "Nieve"}
+MIN_COLECCION = 3
+MAX_COLECCION = 50
+MAX_GALERIA = 1000
+
+
+def anios(fotos):
+    a = sorted({f["fecha_orden"][:4] for f in fotos})
+    return a[0] if len(a) == 1 else f"{a[0]} – {a[-1]}"
+
+
+def colecciones(usuario, hoy):
+    """Las colecciones de recuerdos del día. Se eligen con una semilla por fecha: todo el día salen las mismas."""
+    dia = hoy.date()
+    # shortcut: lee hasta MAX_GALERIA fotos por el índice; precalcular en la Lambda diaria si las galerías crecen mucho
+    consulta = {"IndexName": "por-fecha", "ScanIndexForward": False,
+                "KeyConditionExpression": Key("PK").eq(f"U#{usuario}") & Key("fecha_orden").lt(f"{dia + timedelta(days=1)}")}
+    items = []
+    while len(items) < MAX_GALERIA:
+        r = tabla.query(**consulta)
+        items += [i for i in r["Items"] if i["estado"] == "LISTA"]
+        if "LastEvaluatedKey" not in r:
+            break
+        consulta["ExclusiveStartKey"] = r["LastEvaluatedKey"]
+    azar = random.Random(str(dia))
+    lista = []
+
+    def agregar(clave, titulo, subtitulo, fotos):
+        lista.append({"id": clave, "titulo": titulo, "subtitulo": subtitulo, "fotos": fotos[:MAX_COLECCION]})
+
+    def elegir(grupos):
+        """Uno al azar entre los grupos con suficientes fotos, o None."""
+        candidatos = sorted(k for k, v in grupos.items() if len(v) >= MIN_COLECCION)
+        return azar.choice(candidatos) if candidatos else None
+
+    por_dia = {}
+    for i in items:
+        por_dia.setdefault(datetime.strptime(i["fecha_orden"][:10], "%Y-%m-%d").date(), []).append(i)
+    aniversario = [i for d, v in por_dia.items() if d.year < dia.year and (d.month, d.day) == (dia.month, dia.day) for i in v]
+    if aniversario:
+        agregar("aniversario", *titulo_recuerdos(hoy, aniversario).split(": "), aniversario)
+    # El día más fotografiado de la última semana (sin contar hoy)
+    recientes = {d: v for d, v in por_dia.items() if 1 <= (dia - d).days <= 6 and len(v) >= MIN_COLECCION}
+    if recientes:
+        d = max(recientes, key=lambda x: (len(recientes[x]), x))
+        agregar("reciente", "Rememorando ayer" if (dia - d).days == 1 else f"Rememorando el {DIAS[d.weekday()]}",
+                f"{d.day} de {MESES[d.month - 1]}", recientes[d])
+    if d := elegir({d: v for d, v in por_dia.items() if (dia - d).days > 30 and (d.month, d.day) != (dia.month, dia.day)}):
+        agregar("dia", "¿Te acuerdas de este día?", f"{d.day} de {MESES[d.month - 1]} de {d.year}", por_dia[d])
+    nombres = {i["SK"][8:]: i["nombre"] for i in consultar(f"U#{usuario}", "PERSONA#") if i.get("nombre")}
+    por_persona = {}
+    for i in items:
+        for p in i.get("personas", []):
+            if p in nombres:
+                por_persona.setdefault(nombres[p], []).append(i)
+    if nombre := elegir(por_persona):
+        agregar("persona", f"Con {nombre}", f"{len(por_persona[nombre])} fotos", por_persona[nombre])
+    por_lugar = {}
+    for i in items:
+        if ciudad := ((i.get("lugar") or {}).get("nombre") or "").split(",")[0].strip():
+            por_lugar.setdefault(ciudad, []).append(i)
+    if ciudad := elegir(por_lugar):
+        agregar("lugar", f"En {ciudad}", anios(por_lugar[ciudad]), por_lugar[ciudad])
+    por_tema = {}
+    for i in items:
+        for t in {TEMAS[e] for e in map(normalizar, i.get("etiquetas", [])) if e in TEMAS}:
+            por_tema.setdefault(t, []).append(i)
+    if tema := elegir(por_tema):
+        agregar("tema", tema, anios(por_tema[tema]), por_tema[tema])
+    return lista
+
+
 def recuerdos(usuario, params):
     # Partición propia: la Lambda diaria lista a los suscritos con un Query, sin recorrer la tabla
     activo = "Item" in tabla.get_item(Key={"PK": "RECUERDOS", "SK": usuario})
@@ -410,9 +488,8 @@ def recuerdos(usuario, params):
         hoy = datetime.strptime(params["fecha"], "%Y-%m-%d") if params.get("fecha") else datetime.now(COLOMBIA)
     except ValueError:
         raise ErrorCliente(400, "Fecha inválida") from None
-    fotos = del_dia(usuario, hoy)[:100]
-    return 200, {"activo": activo, "fecha": f"{hoy:%Y-%m-%d}", "titulo": titulo_recuerdos(hoy, fotos) if fotos else None,
-                 "fotos": [resumen(i) for i in fotos]}
+    return 200, {"activo": activo, "fecha": f"{hoy:%Y-%m-%d}",
+                 "recuerdos": [{**c, "fotos": [resumen(i) for i in c["fotos"]]} for c in colecciones(usuario, hoy)]}
 
 
 def activar_recuerdos(usuario):

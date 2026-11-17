@@ -790,9 +790,10 @@ def test_recuerdos(aws, llave_cdn, monkeypatch):
 
     # En la web: los recuerdos del día (o de otra fecha, para la demo)
     web = llamar("GET /recuerdos", params={"fecha": "2026-12-05"})[1]
-    assert web["activo"] and web["titulo"] == "Hace 1 año y 3 años: 2 fotos del 5 de diciembre"
-    assert [f["id"] for f in web["fotos"]] == [hace_un_anio, hace_tres]
-    assert llamar("GET /recuerdos", params={"fecha": "2026-03-01"})[1]["fotos"] == []
+    assert web["activo"] and web["recuerdos"][0]["titulo"] == "Hace 1 año y 3 años"
+    assert web["recuerdos"][0]["subtitulo"] == "2 fotos del 5 de diciembre"
+    assert [f["id"] for f in web["recuerdos"][0]["fotos"]] == [hace_un_anio, hace_tres]
+    assert llamar("GET /recuerdos", params={"fecha": "2026-03-01"})[1]["recuerdos"] == []  # pocas fotos para otras colecciones
     assert llamar("GET /recuerdos", params={"fecha": "ayer"})[0] == 400
 
     def correo(usuario):
@@ -830,3 +831,26 @@ def test_recuerdos_correo_de_cognito(monkeypatch):
         c.add_response("list_users", {"Users": [{"Attributes": [{"Name": "email", "Value": "a@b.co"}, {"Name": "email_verified", "Value": "false"}]}]}, pedido)
         assert recuerdos.correo_de("abc") == "a@b.co"
         assert recuerdos.correo_de("abc") is None  # sin verificar no se le escribe
+
+
+def test_colecciones_de_recuerdos(aws):
+    from datetime import datetime
+    juli = "a" * 32
+    api.tabla.put_item(Item={"PK": f"U#{USUARIO}", "SK": f"PERSONA#{juli}", "nombre": "Juliana"})
+    fotos = {}
+    for n, (fecha, ciudad) in enumerate([("2026-11-14", "Rionegro")] * 3 + [("2026-11-12", "Rionegro")] * 2 + [("2026-03-08", "Cali")] * 3):
+        fotos[n] = f"{n:032x}"
+        foto_lista(fotos[n], fecha, ciudad, juli if n < 4 else None)
+        api.tabla.update_item(Key={"PK": f"U#{USUARIO}", "SK": f"F#{fotos[n]}"}, UpdateExpression="SET etiquetas = :e, personas = :p",
+                              ExpressionAttributeValues={":e": ["Autofoto", "Persona"] if n % 2 else ["Persona"], ":p": [juli] if n < 4 else []})
+    foto_lista("f" * 32, "2026-11-20", "Rionegro")  # del "futuro" respecto a la fecha simulada: no cuenta
+
+    hoy = datetime(2026, 11, 16)
+    lista = {c["id"]: c for c in api.colecciones(USUARIO, hoy)}
+    assert set(lista) == {"reciente", "dia", "persona", "lugar", "tema"}  # sin fotos de años anteriores no hay aniversario
+    assert (lista["reciente"]["titulo"], lista["reciente"]["subtitulo"], len(lista["reciente"]["fotos"])) == ("Rememorando el sábado", "14 de noviembre", 3)
+    assert lista["dia"]["subtitulo"] == "8 de marzo de 2026" and len(lista["dia"]["fotos"]) == 3
+    assert (lista["persona"]["titulo"], lista["persona"]["subtitulo"]) == ("Con Juliana", "4 fotos")
+    assert lista["lugar"]["titulo"] in ("En Rionegro", "En Cali") and lista["tema"]["titulo"] == "Selfies"
+    assert api.colecciones(USUARIO, hoy) == api.colecciones(USUARIO, hoy)  # el mismo día, las mismas
+    assert "aniversario" in {c["id"] for c in api.colecciones(USUARIO, datetime(2027, 3, 8))}

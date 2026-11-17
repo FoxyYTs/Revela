@@ -89,8 +89,18 @@ suscrito:
 3. Manda un correo con **SES** que dice «Hace 1 año…», con hasta 6 miniaturas firmadas por CloudFront durante 7 días y
    un enlace que abre esos recuerdos en la web (`/?recuerdos=AAAA-MM-DD`).
 
-En la web, con o sin correo, los recuerdos del día salen como una tarjeta «Hace 1 año» arriba de la galería
-(`GET /recuerdos`). Para la demo, `/?recuerdos=2027-11-15` muestra cómo se verán dentro de un año las fotos del 15 de
+En la web, con o sin correo, los recuerdos salen en un carrusel arriba de la galería (`GET /recuerdos`). Cada colección
+necesita al menos 3 fotos y se elige con una semilla por fecha, así que se mantienen todo el día y cambian al siguiente:
+
+| Colección | De dónde sale |
+|---|---|
+| «Hace 1 año» | Este mismo día en años anteriores (la misma del correo) |
+| «Rememorando el sábado» | El día con más fotos de la última semana |
+| «¿Te acuerdas de este día?» | Un día de hace más de un mes |
+| «Con Juliana» | Una persona con nombre (si activó personas) |
+| «En Rionegro» | Una ciudad (Amazon Location) |
+| «Selfies», «Para comer», «Perros»… | Etiquetas de Rekognition que dan para un tema |
+ Para la demo, `/?recuerdos=2027-11-15` muestra cómo se verán dentro de un año las fotos del 15 de
 noviembre de 2026; el mismo valor sirve como `fecha` en el `aws lambda invoke`.
 
 **SES está en sandbox:** solo entrega a correos verificados, hasta 200 al día. El `apply` crea la identidad de
