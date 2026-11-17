@@ -854,3 +854,40 @@ def test_colecciones_de_recuerdos(aws):
     assert lista["lugar"]["titulo"] in ("En Rionegro", "En Cali") and lista["tema"]["titulo"] == "Selfies"
     assert api.colecciones(USUARIO, hoy) == api.colecciones(USUARIO, hoy)  # el mismo día, las mismas
     assert "aniversario" in {c["id"] for c in api.colecciones(USUARIO, datetime(2027, 3, 8))}
+
+
+def test_importar_de_google_fotos(aws, monkeypatch):
+    import urllib.error
+    pedidos = []
+
+    class Respuesta(io.BytesIO):
+        def __init__(self, datos, tipo):
+            super().__init__(datos)
+            self.headers = __import__("email.message", fromlist=["Message"]).Message()
+            self.headers["Content-Type"] = tipo
+
+        def __exit__(self, *_):
+            return False
+
+    def abrir(pedido, timeout):
+        pedidos.append(pedido)
+        if "/redirige" in pedido.full_url:
+            raise urllib.error.HTTPError(pedido.full_url, 302, "Found", {}, None)
+        return Respuesta(jpeg(gps=False), "image/heif" if "/heic" in pedido.full_url else "image/jpeg")
+    monkeypatch.setattr(api._descargador, "open", abrir)
+
+    base = "https://lh3.googleusercontent.com/ppa/AbC-123_x"
+    status, r = llamar("POST /importar", {"token": "ya29.token", "url": base, "nombre": "PXL_2024.jpg"})
+    assert status == 201
+    assert pedidos[0].full_url == base + "=d" and pedidos[0].get_header("Authorization") == "Bearer ya29.token"
+    item = api.tabla.get_item(Key={"PK": f"U#{USUARIO}", "SK": f"F#{r['foto']}"})["Item"]
+    assert item["estado"] == "PROCESANDO" and item["nombre"] == "PXL_2024.jpg" and "gps_subida" not in item
+    assert boto3.client("s3").head_object(Bucket="revela-test", Key=item["original"])["ContentType"] == "image/jpeg"
+
+    # El token de Google nunca va a otro host, ni siguiendo una redirección
+    for url in ("https://evil.test/x", "https://lh3.googleusercontent.com.evil.test/x", base + "?x=1", None):
+        assert llamar("POST /importar", {"token": "t", "url": url})[0] == 400
+    assert llamar("POST /importar", {"url": base})[0] == 400
+    assert llamar("POST /importar", {"token": "t", "url": "https://lh3.googleusercontent.com/redirige"})[0] == 400
+    assert llamar("POST /importar", {"token": "t", "url": "https://lh3.googleusercontent.com/heic"})[0] == 415
+    assert len(pedidos) == 3  # las URLs inválidas ni se intentan

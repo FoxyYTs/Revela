@@ -822,37 +822,24 @@ function aviso(texto) {
   setTimeout(() => { panel.lastChild?.remove(); if (!panel.children.length) panel.classList.add("oculto"); }, 5000);
 }
 
-async function subir(archivos) {
+// Fila por archivo en el panel de subidas y de a 3 a la vez: no satura la red del celular durante la demo
+async function colaDeSubida(nombres, tarea, preparar) {
   const panel = $("#subidas");
   panel.classList.remove("oculto");
-  const filas = archivos.map((a) => {
+  const filas = nombres.map((nombre) => {
     const estadoFila = h("span", { textContent: "En cola" });
-    panel.append(h("div", {}, h("span", { textContent: a.name }), estadoFila));
+    panel.append(h("div", {}, h("span", { textContent: nombre }), estadoFila));
     return estadoFila;
   });
+  if (preparar) await preparar(filas);
 
-  if (casilla.checked) filas.forEach((f) => (f.textContent = "Ubicando…"));
-  const ubicacion = await miUbicacion();
-  filas.forEach((f) => (f.textContent = "En cola"));
-
-  // De a 3 a la vez: no satura la red del celular durante la demo
   let i = 0;
   const trabajador = async () => {
-    while (i < archivos.length) {
-      const n = i++, a = archivos[n], fila = filas[n];
+    while (i < nombres.length) {
+      const n = i++, fila = filas[n];
       try {
-        if (!["image/jpeg", "image/png"].includes(a.type)) throw new Error("solo JPG o PNG");
-        if (a.size > MAX_BYTES) throw new Error("pesa más de 15 MB");
         fila.textContent = "Subiendo…";
-        const { foto, url, campos } = await api("POST", "/subidas", { nombre: a.name, tipo: a.type, ...(ubicacion ? { ubicacion } : {}) });
-        const form = new FormData();
-        Object.entries(campos).forEach(([k, v]) => form.append(k, v));
-        form.append("file", a); // el archivo debe ir al final del formulario
-        const r = await fetch(url, { method: "POST", body: form }).catch(() => null);
-        if (!r?.ok) {
-          api("DELETE", `/fotos/${foto}`).catch(() => {}); // que no quede "Revelando…" una foto que nunca llegó
-          throw new Error(r ? `S3 respondió ${r.status}` : "Sin conexión con S3");
-        }
+        await tarea(n);
         fila.textContent = "✓";
         fila.style.color = "var(--ok)";
       } catch (e) {
@@ -866,6 +853,96 @@ async function subir(archivos) {
   cargar();
   setTimeout(() => { panel.replaceChildren(); panel.classList.add("oculto"); }, 4000);
 }
+
+async function subir(archivos) {
+  let ubicacion = null;
+  await colaDeSubida(archivos.map((a) => a.name), async (n) => {
+    const a = archivos[n];
+    if (!["image/jpeg", "image/png"].includes(a.type)) throw new Error("solo JPG o PNG");
+    if (a.size > MAX_BYTES) throw new Error("pesa más de 15 MB");
+    const { foto, url, campos } = await api("POST", "/subidas", { nombre: a.name, tipo: a.type, ...(ubicacion ? { ubicacion } : {}) });
+    const form = new FormData();
+    Object.entries(campos).forEach(([k, v]) => form.append(k, v));
+    form.append("file", a); // el archivo debe ir al final del formulario
+    const r = await fetch(url, { method: "POST", body: form }).catch(() => null);
+    if (!r?.ok) {
+      api("DELETE", `/fotos/${foto}`).catch(() => {}); // que no quede "Revelando…" una foto que nunca llegó
+      throw new Error(r ? `S3 respondió ${r.status}` : "Sin conexión con S3");
+    }
+  }, async (filas) => {
+    if (casilla.checked) filas.forEach((f) => (f.textContent = "Ubicando…"));
+    ubicacion = await miUbicacion();
+    filas.forEach((f) => (f.textContent = "En cola"));
+  });
+}
+
+// ---------- Importar de Google Fotos (Picker API) ----------
+// El token de Google se pide en el navegador y solo sirve para las fotos elegidas. La página crea la sesión del
+// selector; la descarga la hace la API, porque Google no permite bajar las fotos desde otra página (CORS)
+
+const PICKER = "https://photospicker.googleapis.com/v1";
+let gis = null;
+const cargarGis = () => (gis ||= new Promise((listo, falla) => document.head.append(h("script", {
+  src: "https://accounts.google.com/gsi/client", onload: listo,
+  onerror: () => { gis = null; falla(new Error("No se pudo cargar el inicio de sesión de Google")); } }))));
+
+const tokenGoogle = () => new Promise((listo, falla) => google.accounts.oauth2.initTokenClient({
+  client_id: C.googleClientId, scope: "https://www.googleapis.com/auth/photospicker.mediaitems.readonly",
+  callback: (r) => (r.error ? falla(new Error("Google no dio permiso")) : listo(r.access_token)),
+  error_callback: () => falla(new Error("Se cerró la ventana de Google")),
+}).requestAccessToken());
+
+async function picker(token, metodo, ruta) {
+  const r = await fetch(PICKER + ruta, { method: metodo, headers: { Authorization: `Bearer ${token}` } });
+  if (!r.ok) throw new Error(r.status === 403 ? "Tu cuenta de Google no está entre los usuarios de prueba" : `Google Fotos respondió ${r.status}`);
+  return r.json();
+}
+
+async function importarGoogle() {
+  $("#ajustes").hidePopover?.();
+  const dlg = $("#dlg-google"), paso = $("#g-paso"), abrir = $("#g-abrir");
+  abrir.disabled = true;
+  paso.textContent = "Conectando con Google…";
+  dlg.showModal();
+  let token, sesion;
+  try {
+    await cargarGis();
+    token = await tokenGoogle();
+    sesion = await picker(token, "POST", "/sessions");
+    const enlace = sesion.pickerUri + "/autoclose";
+    paso.textContent = "Elige las fotos en Google Fotos y toca «Listo». Esta ventana sigue sola.";
+    abrir.disabled = false;
+    // Un clic propio: el navegador bloquea las ventanas que no abre el usuario
+    abrir.onclick = () => { window.open(enlace, "_blank"); paso.textContent = "Esperando a que elijas las fotos…"; };
+    const cada = (parseFloat(sesion.pollingConfig?.pollInterval) || 3) * 1000;
+    while (!sesion.mediaItemsSet) {
+      await new Promise((listo) => setTimeout(listo, cada));
+      if (!dlg.open) return;  // canceló
+      sesion = await picker(token, "GET", `/sessions/${sesion.id}`);
+    }
+    paso.textContent = "Preparando la importación…";
+    const items = [];
+    let pagina = "";
+    do {
+      const r = await picker(token, "GET", `/mediaItems?sessionId=${sesion.id}&pageSize=100${pagina ? `&pageToken=${encodeURIComponent(pagina)}` : ""}`);
+      items.push(...(r.mediaItems || []));
+      pagina = r.nextPageToken;
+    } while (pagina);
+    dlg.close();
+    const fotos = items.filter((i) => i.type === "PHOTO").map((i) => i.mediaFile);
+    if (items.length > fotos.length) aviso("Los videos no se importan");
+    await colaDeSubida(fotos.map((f) => f.filename), (n) => api("POST", "/importar", { token, url: fotos[n].baseUrl, nombre: fotos[n].filename }));
+  } catch (e) {
+    dlg.close();
+    if (e.message !== "sesión cerrada") aviso(e.message);
+  } finally {
+    if (token && sesion) picker(token, "DELETE", `/sessions/${sesion.id}`).catch(() => {});  // Google borra la sesión y sus URLs
+  }
+}
+
+$("#btn-google").classList.toggle("oculto", !C.googleClientId);
+$("#btn-google").onclick = importarGoogle;
+$("#g-cancelar").onclick = () => $("#dlg-google").close();
 
 // ---------- Inicio ----------
 

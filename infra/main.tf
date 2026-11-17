@@ -72,6 +72,12 @@ variable "correo_alertas" {
   }
 }
 
+variable "google_client_id" {
+  description = "ID de cliente OAuth (aplicación web) del proyecto de Google Cloud con la Photos Picker API"
+  type        = string
+  default     = ""
+}
+
 variable "correos_prueba" {
   description = "Cuentas de Revela que recibirán recuerdos mientras SES esté en sandbox; van en terraform.tfvars"
   type        = list(string)
@@ -99,5 +105,7 @@ module "web" {
     api      = module.api.url
     region   = "us-east-1"
     clientId = module.auth.client_id
+    # ID de cliente OAuth de Google (público): sin él no aparece "Importar de Google Fotos"
+    googleClientId = var.google_client_id
   }
 }

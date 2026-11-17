@@ -278,7 +278,7 @@ resource "aws_apigatewayv2_route" "rutas" {
   for_each = toset(["POST /subidas", "GET /fotos", "GET /fotos/{id}", "DELETE /fotos/{id}", "GET /etiquetas", "GET /lugares", "GET /mapa",
     "GET /personas", "PUT /personas", "DELETE /personas", "PUT /personas/{id}", "POST /fotos/{id}/caras", "POST /personas/{id}/unir",
     "GET /albumes", "POST /albumes", "GET /albumes/{id}", "PUT /albumes/{id}", "DELETE /albumes/{id}",
-  "POST /albumes/{id}/enlace", "DELETE /albumes/{id}/enlace", "GET /recuerdos", "PUT /recuerdos", "DELETE /recuerdos"])
+  "POST /albumes/{id}/enlace", "DELETE /albumes/{id}/enlace", "GET /recuerdos", "PUT /recuerdos", "DELETE /recuerdos", "POST /importar"])
   api_id             = aws_apigatewayv2_api.this.id
   route_key          = each.value
   target             = "integrations/${aws_apigatewayv2_integration.api.id}"

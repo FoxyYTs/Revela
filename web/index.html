@@ -308,6 +308,7 @@
       <label class="item" title="Cada mañana revisamos si tienes fotos de este día en años anteriores">
         <input type="checkbox" id="recibir-recuerdos"> Recibir recuerdos por correo
       </label>
+      <button class="item oculto" id="btn-google">Importar de Google Fotos…</button>
       <button class="item" id="btn-personas">Reconocer personas…</button>
       <button class="item" id="btn-salir">Salir</button>
     </div>
@@ -406,6 +407,22 @@
     <dl id="d-datos"></dl>
     <div id="d-texto"></div>
   </aside>
+</dialog>
+
+<dialog id="dlg-google" class="caja">
+  <div class="consentimiento">
+    <h3>Importar de Google Fotos</h3>
+    <p id="g-paso"></p>
+    <ul>
+      <li>Revela solo ve las fotos que elijas; no puede leer el resto de tu biblioteca.</li>
+      <li>Google las entrega sin ubicación: no saldrán en el mapa. Fecha, etiquetas, personas y búsqueda funcionan igual.</li>
+      <li>Cuentan para el límite de 50 fotos por día.</li>
+    </ul>
+    <div class="acciones">
+      <button class="btn primario" id="g-abrir" disabled>Abrir Google Fotos</button>
+      <button class="btn" id="g-cancelar">Cancelar</button>
+    </div>
+  </div>
 </dialog>
 
 <dialog id="dlg-personas" class="caja">

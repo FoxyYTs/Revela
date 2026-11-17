@@ -79,6 +79,28 @@ encontró aparecen debajo, como en cualquier búsqueda, y se pueden pasar a un �
 - Si una búsqueda con varios filtros queda vacía, `buscar_fotos` le dice al modelo cuántas fotos da cada filtro por
   separado. Así propone algo concreto («Juliana sale en 2 fotos, pero ninguna en Medellín»).
 
+## Importar de Google Fotos (Picker API)
+
+En los ajustes, **Importar de Google Fotos…** abre el selector oficial de Google Fotos. Revela solo ve las fotos que el
+usuario elige: Google retiró en 2025 el acceso a la biblioteca completa.
+
+1. La página pide un token de Google (Google Identity Services, permiso `photospicker.mediaitems.readonly`).
+2. Con ese token crea una sesión del selector, el usuario abre Google Fotos y elige, y la página espera a que la
+   sesión diga `mediaItemsSet`.
+3. Por cada foto, `POST /importar {token, url, nombre}`. La API la descarga (`baseUrl=d`) y la deja en `originales/`
+   con el mismo cupo y el mismo análisis de una subida normal. La descarga no la puede hacer el navegador porque
+   Google no permite CORS con `Authorization` en `lh3.googleusercontent.com`.
+4. Al final la página borra la sesión.
+
+- **Seguridad:** la API solo acepta URLs `https://lhN.googleusercontent.com/…` y no sigue redirecciones, así que el
+  token de Google no puede terminar en otro host. Tampoco se guarda ni se registra en los logs.
+- **Limitaciones:**
+  - Google entrega las fotos **sin ubicación**: no salen en el mapa.
+  - Solo se importan JPG y PNG: HEIC y videos no.
+- **Configuración:** proyecto de Google Cloud con la Photos Picker API, pantalla de consentimiento en modo prueba
+  (usuarios de prueba) y un ID de cliente OAuth web con los orígenes de CloudFront y `http://localhost:8000`. El ID va
+  en `google_client_id` de `terraform.tfvars`; sin él, el botón no aparece.
+
 ## Recuerdos (`lambdas/recuerdos.py`)
 
 Quien marca **Recibir recuerdos por correo** en los ajustes queda en la partición `RECUERDOS` de la tabla. Cada día a

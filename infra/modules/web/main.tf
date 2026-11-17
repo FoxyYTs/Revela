@@ -89,11 +89,13 @@ locals {
   # Solo se ejecuta código de la propia web y de cdnjs (MapLibre, con SRI); la página guarda tokens de sesión
   csp = join("; ", [
     "default-src 'self'",
-    "script-src 'self' https://cdnjs.cloudflare.com",
+    # accounts.google.com: Google Identity Services, solo para el token del selector de Google Fotos
+    "script-src 'self' https://cdnjs.cloudflare.com https://accounts.google.com/gsi/client",
     "style-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com https://fonts.googleapis.com",
     "font-src https://fonts.gstatic.com",
     "img-src 'self' data: blob: ${local.s3_fotos}",
-    "connect-src 'self' https://*.execute-api.us-east-1.amazonaws.com https://cognito-idp.us-east-1.amazonaws.com https://maps.geo.us-east-1.amazonaws.com ${local.s3_fotos}",
+    "connect-src 'self' https://*.execute-api.us-east-1.amazonaws.com https://cognito-idp.us-east-1.amazonaws.com https://maps.geo.us-east-1.amazonaws.com https://photospicker.googleapis.com ${local.s3_fotos}",
+    "frame-src https://accounts.google.com",
     "worker-src blob:",
     "object-src 'none'",
     "base-uri 'none'",

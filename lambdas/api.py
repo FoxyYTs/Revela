@@ -18,6 +18,7 @@ GET    /albumes       → álbumes del usuario;  POST /albumes {nombre} → crea
 GET    /albumes/{id}  → el álbum con sus fotos;  PUT {nombre?, agregar?, quitar?};  DELETE lo borra (y su enlace)
 POST   /albumes/{id}/enlace {dias} → enlace para verlo sin cuenta;  DELETE lo revoca
 GET    /compartidos/{token} (pública) → el álbum compartido con URLs de CloudFront firmadas por una hora
+POST   /importar      → {token, url, nombre}: descarga una foto elegida en Google Fotos (Picker API) y la mete al flujo
 GET    /recuerdos     → si recibe recuerdos por correo y las colecciones del día: hace N años, un día reciente, un día
                         viejo, una persona, un lugar y un tema (?fecha=AAAA-MM-DD simula otro día);  PUT activa el
                         correo;  DELETE lo apaga
@@ -31,6 +32,8 @@ import random
 import re
 import secrets
 import unicodedata
+import urllib.error
+import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -172,10 +175,8 @@ def descontar_cupo(usuario, contador="subidas", tope=None, mensaje=None):
         raise ErrorCliente(429, mensaje or f"Llegaste al límite de {SUBIDAS_DIA} fotos por día; mañana puedes subir más") from None
 
 
-def crear_subida(usuario, cuerpo):
-    tipo = cuerpo.get("tipo")
-    if tipo not in TIPOS:
-        raise ErrorCliente(400, "Solo se aceptan fotos JPG o PNG")
+def nueva_foto(usuario, nombre, tipo, ubicacion=None):
+    """Registra la foto en PROCESANDO y devuelve (id, key en originales/); el análisis arranca cuando llega a S3."""
     descontar_cupo(usuario)
     foto = uuid.uuid4().hex
     key = f"originales/{usuario}/{foto}.{TIPOS[tipo]}"
@@ -183,19 +184,61 @@ def crear_subida(usuario, cuerpo):
 
     item = {
         "PK": f"U#{usuario}", "SK": f"F#{foto}", "estado": "PROCESANDO",
-        "nombre": str(cuerpo.get("nombre", ""))[:200], "original": key,
+        "nombre": str(nombre or "")[:200], "original": key,
         "fecha_subida": ahora.strftime("%Y-%m-%dT%H:%M:%S"), "fecha_orden": f"{ahora:%Y-%m-%dT%H:%M:%S}#{foto}",
         "expira": int(ahora.timestamp()) + EXPIRA_PENDIENTE,
     }
-    ubicacion = leer_ubicacion(cuerpo.get("ubicacion"))
     if ubicacion:
         item["gps_subida"] = ubicacion
     tabla.put_item(Item=item)
+    return foto, key
+
+
+def crear_subida(usuario, cuerpo):
+    tipo = cuerpo.get("tipo")
+    if tipo not in TIPOS:
+        raise ErrorCliente(400, "Solo se aceptan fotos JPG o PNG")
+    foto, key = nueva_foto(usuario, cuerpo.get("nombre"), tipo, leer_ubicacion(cuerpo.get("ubicacion")))
     # S3 rechaza el POST si el tipo, la key o el tamaño no coinciden con lo firmado
     post = s3.generate_presigned_post(
         BUCKET, key, Fields={"Content-Type": tipo},
         Conditions=[{"Content-Type": tipo}, ["content-length-range", 1, MAX_BYTES]], ExpiresIn=120)
     return 201, {"foto": foto, "url": post["url"], "campos": post["fields"]}
+
+
+# baseUrl de un media item del Picker; el token de Google solo se manda a ese host
+GOOGLE_FOTOS = re.compile(r"https://lh\d\.googleusercontent\.com/[\w\-./]+")
+
+
+class _SinRedireccion(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *_):
+        return None  # una redirección a otro host se llevaría el token: mejor fallar
+
+
+_descargador = urllib.request.build_opener(_SinRedireccion)
+
+
+def importar(usuario, cuerpo):
+    """El navegador no puede descargar de Google Fotos (sin CORS para Authorization), así que lo hace la API."""
+    url, token = cuerpo.get("url"), cuerpo.get("token")
+    if not isinstance(url, str) or not GOOGLE_FOTOS.fullmatch(url) or not isinstance(token, str) or not 0 < len(token) < 4096:
+        raise ErrorCliente(400, "Foto de Google Fotos inválida")
+    # "=d" baja el archivo con su EXIF (fecha, cámara); Google le quita la ubicación
+    pedido = urllib.request.Request(url + "=d", headers={"Authorization": f"Bearer {token}"})
+    try:
+        with _descargador.open(pedido, timeout=20) as r:
+            tipo, datos = r.headers.get_content_type(), r.read(MAX_BYTES + 1)
+    except urllib.error.HTTPError as e:
+        raise ErrorCliente(502 if e.code >= 500 else 400, "Google Fotos no entregó la foto; vuelve a elegirla") from None
+    except (urllib.error.URLError, TimeoutError):
+        raise ErrorCliente(502, "No se pudo descargar de Google Fotos") from None
+    if tipo not in TIPOS:
+        raise ErrorCliente(415, "Solo se importan fotos JPG o PNG")
+    if len(datos) > MAX_BYTES:
+        raise ErrorCliente(413, "La foto pesa más de 15 MB")
+    foto, key = nueva_foto(usuario, cuerpo.get("nombre"), tipo)
+    s3.put_object(Bucket=BUCKET, Key=key, Body=datos, ContentType=tipo)
+    return 201, {"foto": foto}
 
 
 def listar(usuario, params):
@@ -767,6 +810,8 @@ def lambda_handler(event, _context):
             return responder(*lugares(usuario))
         if ruta == "GET /mapa":
             return responder(*mapa())
+        if ruta == "POST /importar":
+            return responder(*importar(usuario, cuerpo))
         if ruta == "GET /recuerdos":
             return responder(*recuerdos(usuario, params))
         if ruta == "PUT /recuerdos":
