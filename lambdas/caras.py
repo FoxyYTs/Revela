@@ -1,6 +1,7 @@
 """Caras de las fotos de quien activó "Personas": se indexan en la colección de Rekognition del usuario y se agrupan
 por persona con Rekognition Users. Lo usan guardar.py (fotos nuevas) y api.py (volver a buscar en una foto)."""
 import os
+import time
 import uuid
 from decimal import Decimal
 
@@ -42,7 +43,16 @@ def reconocer(usuario, foto, bucket, key, calidad="AUTO"):
 def agrupar(coleccion, registro):
     """Asocia la cara a la persona más parecida o crea una nueva; devuelve (persona, caja)."""
     cara = registro["Face"]["FaceId"]
-    parecidas = rekognition.search_users(CollectionId=coleccion, FaceId=cara, UserMatchThreshold=UMBRAL_CARA, MaxUsers=1)["UserMatches"]
+    # Con muchas fotos a la vez, la cara recién indexada a veces todavía no se puede buscar y Rekognition responde
+    # InvalidParameterException (así trata una FaceId que no encuentra); unos segundos después ya aparece
+    for espera in (1, 2, 4, 0):
+        try:
+            parecidas = rekognition.search_users(CollectionId=coleccion, FaceId=cara, UserMatchThreshold=UMBRAL_CARA, MaxUsers=1)["UserMatches"]
+            break
+        except rekognition.exceptions.InvalidParameterException:
+            if not espera:
+                raise
+            time.sleep(espera)
     persona = parecidas[0]["User"]["UserId"] if parecidas else uuid.uuid4().hex
     if not parecidas:
         rekognition.create_user(CollectionId=coleccion, UserId=persona)

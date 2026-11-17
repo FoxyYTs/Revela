@@ -55,15 +55,21 @@ async function token() {
 
 async function api(metodo, ruta, cuerpo) {
   let r;
-  try {
-    r = await fetch(C.api + ruta, {
-      method: metodo,
-      headers: { Authorization: `Bearer ${await token()}`, ...(cuerpo ? { "Content-Type": "application/json" } : {}) },
-      body: cuerpo ? JSON.stringify(cuerpo) : undefined,
-    });
-  } catch (e) {
-    if (e.message === "sin sesión" || e.tipo === "NotAuthorizedException") return salir();
-    throw e;
+  // 503/429: la cuenta tiene 10 Lambdas a la vez para todo y el análisis las ocupa; el pedido no se ejecutó, así que
+  // se puede repetir sin duplicar nada
+  for (const espera of [1000, 2000, 4000, 8000, 0]) {
+    try {
+      r = await fetch(C.api + ruta, {
+        method: metodo,
+        headers: { Authorization: `Bearer ${await token()}`, ...(cuerpo ? { "Content-Type": "application/json" } : {}) },
+        body: cuerpo ? JSON.stringify(cuerpo) : undefined,
+      });
+    } catch (e) {
+      if (e.message === "sin sesión" || e.tipo === "NotAuthorizedException") return salir();
+      throw e;
+    }
+    if (![429, 503].includes(r.status) || !espera) break;
+    await new Promise((listo) => setTimeout(listo, espera + Math.random() * 500));
   }
   if (r.status === 401) return salir();
   const datos = r.status === 204 ? null : await r.json();

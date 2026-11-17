@@ -911,3 +911,20 @@ def test_importar_de_google_fotos(aws, traductor, monkeypatch):
     assert llamar("POST /importar", {"token": "t", "url": "https://lh3.googleusercontent.com/redirige"})[0] == 400
     assert llamar("POST /importar", {"token": "t", "url": "https://lh3.googleusercontent.com/heic"})[0] == 415
     assert len(pedidos) == 3  # las URLs inválidas ni se intentan
+
+
+def test_cara_recien_indexada_que_aun_no_se_encuentra(aws, traductor, caras, monkeypatch):
+    # Con muchas fotos a la vez, SearchUsers a veces no ve la cara recién indexada; se reintenta en vez de fallar la foto
+    g, a = caras
+    monkeypatch.setattr(caras_mod.time, "sleep", lambda s: None)
+    a.add_response("create_collection", {"StatusCode": 200})
+    llamar("PUT /personas")
+    g.add_response("index_faces", caras_indexadas("c1"))
+    g.add_client_error("search_users", "InvalidParameterException")
+    g.add_client_error("search_users", "InvalidParameterException")
+    g.add_response("search_users", {"UserMatches": []})
+    g.add_response("create_user", {})
+    g.add_response("associate_faces", asociada("c1"))
+    foto, resultado = subir_y_analizar(traductor)
+    g.assert_no_pending_responses()
+    assert resultado["estado"] == "LISTA" and len(llamar("GET /fotos/{id}", foto=foto)[1]["personas"]) == 1
