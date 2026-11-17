@@ -778,7 +778,7 @@ def test_recuerdos(aws, llave_cdn, monkeypatch):
     import recuerdos
     monkeypatch.setattr(recuerdos, "REMITENTE", "revela@correo.test")
     monkeypatch.setattr(recuerdos, "POOL", "us-east-1_test")
-    assert llamar("GET /recuerdos")[1] == {"activo": False}
+    assert llamar("GET /recuerdos")[1]["activo"] is False
     assert llamar("PUT /recuerdos")[1] == {"activo": True}
     api.tabla.put_item(Item={"PK": "RECUERDOS", "SK": "otro-usuario"})  # suscrito sin fotos: no recibe nada
 
@@ -787,6 +787,13 @@ def test_recuerdos(aws, llave_cdn, monkeypatch):
     foto_lista(hace_tres, "2023-12-05")
     foto_lista(otro_dia, "2025-12-06")
     foto_lista(este_anio, "2026-12-05")
+
+    # En la web: los recuerdos del día (o de otra fecha, para la demo)
+    web = llamar("GET /recuerdos", params={"fecha": "2026-12-05"})[1]
+    assert web["activo"] and web["titulo"] == "Hace 1 año y 3 años: 2 fotos del 5 de diciembre"
+    assert [f["id"] for f in web["fotos"]] == [hace_un_anio, hace_tres]
+    assert llamar("GET /recuerdos", params={"fecha": "2026-03-01"})[1]["fotos"] == []
+    assert llamar("GET /recuerdos", params={"fecha": "ayer"})[0] == 400
 
     def correo(usuario):
         assert usuario == USUARIO  # a "otro-usuario" no se le busca el correo porque no tiene recuerdos
@@ -802,7 +809,8 @@ def test_recuerdos(aws, llave_cdn, monkeypatch):
     assert album["nombre"] == "Recuerdos del 5 de diciembre" and album["fotos"] == 2
     asunto = enviados[0]["Message"]["Subject"]["Data"]
     assert asunto == "Hace 1 año y 3 años: 2 fotos del 5 de diciembre" and enviados[0]["Destination"]["ToAddresses"] == ["persona@correo.test"]
-    assert enviados[0]["Message"]["Body"]["Html"]["Data"].count("https://cdn.test/miniaturas/") == 2  # firmadas por CloudFront
+    cuerpo = enviados[0]["Message"]["Body"]["Html"]["Data"]
+    assert cuerpo.count("https://cdn.test/miniaturas/") == 2 and "https://cdn.test/?recuerdos=2026-12-05" in cuerpo
 
     # Si vuelve a correr el mismo día no repite el álbum (el correo sí sale)
     assert recuerdos.lambda_handler({"fecha": "2026-12-05"}, None)["albumes"] == 0

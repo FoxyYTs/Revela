@@ -18,7 +18,8 @@ GET    /albumes       → álbumes del usuario;  POST /albumes {nombre} → crea
 GET    /albumes/{id}  → el álbum con sus fotos;  PUT {nombre?, agregar?, quitar?};  DELETE lo borra (y su enlace)
 POST   /albumes/{id}/enlace {dias} → enlace para verlo sin cuenta;  DELETE lo revoca
 GET    /compartidos/{token} (pública) → el álbum compartido con URLs de CloudFront firmadas por una hora
-GET    /recuerdos     → si recibe recuerdos por correo;  PUT los activa;  DELETE los apaga
+GET    /recuerdos     → si recibe recuerdos por correo y las fotos de este día en años anteriores (?fecha=AAAA-MM-DD
+                        para simular otro día);  PUT activa el correo;  DELETE lo apaga
 POST   /asistente     → lo atiende otra Lambda (asistente.py): agente de Strands que combina estas búsquedas
 """
 import base64
@@ -377,10 +378,41 @@ def desactivar_personas(usuario):
     return personas(usuario)
 
 
-def recuerdos(usuario):
+MESES = ["enero", "febrero", "marzo", "abril", "mayo", "junio", "julio", "agosto", "septiembre", "octubre", "noviembre",
+         "diciembre"]
+
+
+def del_dia(usuario, hoy):
+    """Fotos listas de este mismo día y mes en años anteriores, de la más reciente a la más vieja."""
+    # shortcut: recorre la galería entera del usuario; un índice por MM-DD si las galerías crecen mucho
+    consulta = {"IndexName": "por-fecha", "KeyConditionExpression": Key("PK").eq(f"U#{usuario}") & Key("fecha_orden").lt(f"{hoy.year}"),
+                "ScanIndexForward": False}
+    fotos = []
+    while True:
+        r = tabla.query(**consulta)
+        fotos += [i for i in r["Items"] if i["estado"] == "LISTA" and i["fecha_orden"][5:10] == f"{hoy:%m-%d}"]
+        if "LastEvaluatedKey" not in r:
+            return fotos
+        consulta["ExclusiveStartKey"] = r["LastEvaluatedKey"]
+
+
+def titulo_recuerdos(hoy, fotos):
+    """"Hace 1 año y 3 años: 2 fotos del 5 de diciembre"."""
+    anios = sorted({hoy.year - int(f["fecha_orden"][:4]) for f in fotos})
+    hace = " y ".join(", ".join(f"{a} año{'s' if a > 1 else ''}" for a in anios).rsplit(", ", 1))
+    return f"Hace {hace}: {len(fotos)} foto{'s' if len(fotos) > 1 else ''} del {hoy.day} de {MESES[hoy.month - 1]}"
+
+
+def recuerdos(usuario, params):
     # Partición propia: la Lambda diaria lista a los suscritos con un Query, sin recorrer la tabla
     activo = "Item" in tabla.get_item(Key={"PK": "RECUERDOS", "SK": usuario})
-    return 200, {"activo": activo}
+    try:
+        hoy = datetime.strptime(params["fecha"], "%Y-%m-%d") if params.get("fecha") else datetime.now(COLOMBIA)
+    except ValueError:
+        raise ErrorCliente(400, "Fecha inválida") from None
+    fotos = del_dia(usuario, hoy)[:100]
+    return 200, {"activo": activo, "fecha": f"{hoy:%Y-%m-%d}", "titulo": titulo_recuerdos(hoy, fotos) if fotos else None,
+                 "fotos": [resumen(i) for i in fotos]}
 
 
 def activar_recuerdos(usuario):
@@ -659,7 +691,7 @@ def lambda_handler(event, _context):
         if ruta == "GET /mapa":
             return responder(*mapa())
         if ruta == "GET /recuerdos":
-            return responder(*recuerdos(usuario))
+            return responder(*recuerdos(usuario, params))
         if ruta == "PUT /recuerdos":
             return responder(*activar_recuerdos(usuario))
         if ruta == "DELETE /recuerdos":

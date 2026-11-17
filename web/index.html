@@ -136,6 +136,13 @@
   .persona:hover .cara { border-color: var(--acento-2); }
   .cara img { position: absolute; max-width: none; }
   .uniendo .cara { outline: 2px dashed var(--acento-2); outline-offset: 2px; }
+  .recuerdo { position: relative; display: block; width: 168px; aspect-ratio: 3 / 4; margin: 14px 0 6px; padding: 0; border: 0;
+              border-radius: var(--radio); overflow: hidden; cursor: pointer; background: var(--panel); }
+  .recuerdo img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .recuerdo span { position: absolute; inset: auto 0 0; padding: 48px 12px 12px; text-align: left; color: #fff;
+                   background: linear-gradient(transparent, rgb(0 0 0 / .78)); font: 600 18px/1.15 Fraunces, serif; }
+  .recuerdo small { display: block; margin-top: 4px; font: 500 12px Inter, sans-serif; opacity: .85; }
+  .recuerdo:focus-visible { outline: 2px solid var(--acento-2); outline-offset: 2px; }
   .mosaico { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; }
   .lugar, .album { background: none; border: 0; padding: 0; text-align: left; color: var(--texto); }
   .lugar img, .album img, .album .sin-portada { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; border-radius: var(--radio); background: var(--panel); }
@@ -217,7 +224,7 @@
     .buscar { padding: 0 10px; }
     .buscar .preguntar span { display: none; }
     main { padding: 0 3px 90px; }
-    main :is(.contexto, .dia h2, .vista > h2, .titulo-vista, .mosaico, .personas, .chips, .invitacion) { margin-left: 10px; margin-right: 10px; }
+    main :is(.recuerdos, .contexto, .dia h2, .vista > h2, .titulo-vista, .mosaico, .personas, .chips, .invitacion) { margin-left: 10px; margin-right: 10px; }
     .fila { gap: 3px; }
     .foto .aviso { font-size: 11px; padding: 4px; }
     .seleccion { left: 0; padding: 10px 12px; flex-wrap: wrap; }
@@ -321,6 +328,7 @@
 
   <main id="zona">
     <section id="v-fotos" class="vista">
+      <div class="recuerdos oculto" id="recuerdos"></div>
       <div class="contexto oculto" id="contexto"></div>
       <div id="linea"></div>
       <div class="vacio oculto" id="vacio"></div>

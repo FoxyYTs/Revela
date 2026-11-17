@@ -87,7 +87,11 @@ suscrito:
 1. Busca fotos de ese mismo día y mes en años anteriores.
 2. Arma el álbum «Recuerdos del 5 de diciembre». Si ya existe uno con esas fotos, no lo repite.
 3. Manda un correo con **SES** que dice «Hace 1 año…», con hasta 6 miniaturas firmadas por CloudFront durante 7 días y
-   un enlace a Revela.
+   un enlace que abre esos recuerdos en la web (`/?recuerdos=AAAA-MM-DD`).
+
+En la web, con o sin correo, los recuerdos del día salen como una tarjeta «Hace 1 año» arriba de la galería
+(`GET /recuerdos`). Para la demo, `/?recuerdos=2027-11-15` muestra cómo se verán dentro de un año las fotos del 15 de
+noviembre de 2026; el mismo valor sirve como `fecha` en el `aws lambda invoke`.
 
 **SES está en sandbox:** solo entrega a correos verificados, hasta 200 al día. El `apply` crea la identidad de
 `correo_alertas`, y AWS manda un correo de verificación que hay que confirmar. Ese correo funciona como remitente y

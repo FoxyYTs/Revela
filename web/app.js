@@ -505,6 +505,7 @@ function contexto() {
 }
 
 function pintar() {
+  pintarRecuerdos();
   $("#linea").classList.toggle("eligiendo", estado.eligiendo);
   $("#linea").classList.toggle("seleccionando", estado.sel.size > 0);
   $("#linea").replaceChildren(...grupos().map(([dia, fotos]) => h("section", { className: "dia" },
@@ -684,7 +685,34 @@ casilla.onchange = () => { try { localStorage.setItem("revela.ubicacion", casill
 
 // La preferencia vive en el servidor: la Lambda diaria solo escribe a quien la activó
 const recuerdos = $("#recibir-recuerdos");
-async function cargarRecuerdos() { recuerdos.checked = (await api("GET", "/recuerdos")).activo; }
+// Los recuerdos del día salen arriba de la galería; ?recuerdos=AAAA-MM-DD (el enlace del correo) los abre de una vez
+// y sirve para simular otro día en la demo
+async function cargarRecuerdos() {
+  const fecha = new URLSearchParams(location.search).get("recuerdos");
+  const r = await api("GET", "/recuerdos" + (fecha ? `?fecha=${encodeURIComponent(fecha)}` : ""));
+  recuerdos.checked = r.activo;
+  estado.recuerdos = r.fotos.length ? r : null;
+  if (fecha && estado.recuerdos) verRecuerdos();
+  else pintar();
+}
+
+function verRecuerdos() {
+  const [hace, detalle] = estado.recuerdos.titulo.split(": ");
+  Object.assign(estado, { q: hace, respuesta: detalle[0].toUpperCase() + detalle.slice(1), persona: null, album: null, charla: null,
+                          eligiendo: false, uniendo: false, siguiente: null, fotos: estado.recuerdos.fotos });
+  $("#q").value = "";
+  vista("fotos");
+  pintar();
+}
+
+function pintarRecuerdos() {
+  const r = estado.recuerdos, caja = $("#recuerdos");
+  caja.classList.toggle("oculto", !r || !!(estado.q || estado.persona || estado.album));
+  if (!r) return caja.replaceChildren();
+  const [hace, detalle] = r.titulo.split(": ");
+  caja.replaceChildren(h("button", { className: "recuerdo", onclick: verRecuerdos, ariaLabel: r.titulo },
+    h("img", { src: r.fotos[0].miniatura, alt: "" }), h("span", {}, hace, h("small", { textContent: detalle }))));
+}
 recuerdos.onchange = async () => {
   try {
     recuerdos.checked = (await api(recuerdos.checked ? "PUT" : "DELETE", "/recuerdos")).activo;
