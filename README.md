@@ -1,5 +1,7 @@
 # Revela — galería de fotos inteligente en AWS
 
+> **Estado:** expuesto el 21/11/2026. Ese día se borraron las caras y se destruyó la infraestructura (`terraform destroy`, 111 recursos); la web ya no está en línea.
+
 Trabajo final de Computación en la Nube (2026-2), de [José Andrés Daza Gallego](https://github.com/FoxyYTs) y [Juliana Castañeda Ramírez](https://github.com/Juliana61). Una galería de fotos tipo Google Fotos, sin
 servidores: cuentas con Cognito, subida directa a S3, análisis en paralelo con Step Functions (etiquetas, OCR,
 moderación, miniatura + EXIF), pie de foto con Nova, lugares con Amazon Location, búsqueda por significado con
